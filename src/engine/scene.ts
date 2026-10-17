@@ -95,8 +95,14 @@ export class SceneEngine {
         const lightingDraft: Record<string, unknown> = {
           ambient: { ...this.state.lighting.ambient, ...(args.ambient as object) },
           directional: { ...this.state.lighting.directional, ...(args.directional as object) },
+          backgroundMode: args.backgroundMode ?? this.state.lighting.backgroundMode,
+          ...(this.state.lighting.backgroundColor ? { backgroundColor: this.state.lighting.backgroundColor } : {}),
           ...(this.state.lighting.environmentAssetId ? { environmentAssetId: this.state.lighting.environmentAssetId } : {}),
         };
+        if (args.backgroundColor !== undefined) {
+          if (args.backgroundColor === null) delete lightingDraft.backgroundColor;
+          else lightingDraft.backgroundColor = args.backgroundColor;
+        }
         if (args.environmentAssetId !== undefined) {
           if (args.environmentAssetId === null) delete lightingDraft.environmentAssetId;
           else lightingDraft.environmentAssetId = args.environmentAssetId;

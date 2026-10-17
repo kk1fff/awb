@@ -11,7 +11,7 @@ const descriptions: Record<ToolName, string> = {
   inspect_object: 'Inspect one scene object by ID.',
   search_assets: 'Search the local catalog for models, material presets, or lighting environments.',
   set_camera: 'Set position, target, orthographic view size, projection, or vertical perspective field of view.',
-  set_lighting: 'Update ambient or directional scene lighting.',
+  set_lighting: 'Update ambient/directional lighting, shadow softness, or visible background mode/color.',
   render_scene: 'Capture a PNG checkpoint of the current scene for visual inspection.',
   export_scene: 'Export visible scene meshes and materials as a downloadable GLB file.',
   save_scene: 'Save the current editable scene under a name.',

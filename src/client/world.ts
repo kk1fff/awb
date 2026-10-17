@@ -51,14 +51,17 @@ export async function buildWorld(state: Scene) {
     throw new Error(`Unknown environment asset ${id}`);
   };
   const environment = await loadEnvironment();
+  const fallbackBackground = state.lighting.environmentAssetId ? '#b9c6c5' : '#e9ede5';
   if (environment) {
     environment.mapping = THREE.EquirectangularReflectionMapping;
     world.environment = environment;
     world.environmentIntensity = 0.55;
-    // Keep the reflection map for material lighting; a solid overcast sky gives
-    // the house a readable horizon instead of exposing the raw HDR/data map.
-    world.background = new THREE.Color('#b9c6c5');
   }
+  // The same environment asset independently drives reflections and, when
+  // requested, the visible sky. Legacy scenes default to their prior solid.
+  world.background = state.lighting.backgroundMode === 'environment' && environment
+    ? environment
+    : new THREE.Color(state.lighting.backgroundColor ?? fallbackBackground);
   const gltfLoader = new GLTFLoader();
   const items = await Promise.all(state.objects.map(async (object) => {
     let root: THREE.Object3D;
@@ -122,6 +125,9 @@ export async function buildWorld(state: Scene) {
   sun.position.fromArray(directional.position);
   sun.castShadow = true;
   sun.shadow.mapSize.set(2048, 2048);
+  // PCF radius is consumed by Three's PCFShadowMap shader. A 2x response
+  // gives each integer UI step a visible but bounded penumbra change.
+  sun.shadow.radius = 1 + directional.shadowSoftness * 2;
   sun.shadow.bias = -0.0005;
   Object.assign(sun.shadow.camera, {
     left: -15,

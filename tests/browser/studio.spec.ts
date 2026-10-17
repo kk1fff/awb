@@ -94,6 +94,77 @@ test('public lighting controls produce a visible change in a fixed-scene render'
   expect(directionalLit - unlit, `directional response: ${unlit} -> ${directionalLit}`).toBeGreaterThan(8);
 });
 
+test('environment background and PCF softness change the same scene render', async ({ page, request }) => {
+  await tool(request, 'create_object', {
+    name: 'A/B ground', type: 'box', position: [0, -0.15, 0], dimensions: [24, 0.3, 24], color: '#727b50',
+  });
+  await tool(request, 'create_object', {
+    name: 'A/B house mass', type: 'box', position: [0, 2, 0], dimensions: [6, 4, 5], color: '#a98768',
+  });
+  await tool(request, 'create_object', {
+    name: 'A/B porch post', type: 'box', position: [3.3, 1.3, 2.3], dimensions: [0.25, 2.6, 0.25], color: '#654b36',
+  });
+  await tool(request, 'create_object', {
+    name: 'A/B fir', type: 'cone', position: [6, 2.4, 1], dimensions: [2.4, 4.8, 2.4], color: '#34543a',
+  });
+  await tool(request, 'set_camera', {
+    projection: 'perspective', fov: 38, position: [15, 9, 18], target: [0, 2, 0],
+  });
+  const fixedLight = {
+    ambient: { color: '#ffffff', intensity: 0.55 },
+    directional: { color: '#fff4dc', intensity: 3, position: [-7, 12, 8], shadowSoftness: 0 },
+  };
+  await tool(request, 'set_lighting', fixedLight);
+  await page.goto('/');
+
+  const capture = async (label: string, patch: Record<string, unknown>) => {
+    await tool(request, 'set_lighting', patch);
+    const result = (await tool(request, 'render_scene', { label })).result as Checkpoint;
+    const image = await request.get(result.screenshotUrl!);
+    expect(image.ok()).toBeTruthy();
+    const buffer = await image.body();
+    const outPath = `artifacts/tests/${label.replaceAll(' ', '-')}.png`;
+    await mkdir('artifacts/tests', { recursive: true });
+    await writeFile(outPath, buffer);
+    const encoded = buffer.toString('base64');
+    const pixels = await page.evaluate(async (base64) => {
+      const image = new Image();
+      image.src = `data:image/png;base64,${base64}`;
+      await image.decode();
+      const canvas = document.createElement('canvas');
+      canvas.width = image.width;
+      canvas.height = image.height;
+      const context = canvas.getContext('2d')!;
+      context.drawImage(image, 0, 0);
+      return context.getImageData(0, 0, image.width, image.height).data;
+    }, encoded);
+    return { result, pixels: Array.from(pixels) };
+  };
+  const solid = await capture('lighting-ab-solid-hard', {
+    backgroundMode: 'solid', environmentAssetId: 'builtin:pnw-overcast',
+  });
+  const visibleEnvironment = await capture('lighting-ab-environment-hard', { backgroundMode: 'environment' });
+  const soft = await capture('lighting-ab-environment-soft', { directional: { shadowSoftness: 4 } });
+  expect(solid.result.sceneRevision).toBeLessThan(visibleEnvironment.result.sceneRevision);
+
+  const difference = (a: number[], b: number[], x0: number, y0: number, x1: number, y1: number) => {
+    let changed = 0;
+    let total = 0;
+    const width = 1024;
+    for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) {
+      const i = (y * width + x) * 4;
+      const delta = Math.abs(a[i]! - b[i]!) + Math.abs(a[i + 1]! - b[i + 1]!) + Math.abs(a[i + 2]! - b[i + 2]!);
+      if (delta > 12) changed++;
+      total++;
+    }
+    return changed / total;
+  };
+  // Sky-only pixels demonstrate that environment selection is visible, not just IBL.
+  expect(difference(solid.pixels, visibleEnvironment.pixels, 200, 20, 824, 130)).toBeGreaterThan(0.2);
+  // Lower scene region includes the fir's east-side cast shadow and porch/foundation contact shadows.
+  expect(difference(visibleEnvironment.pixels, soft.pixels, 120, 300, 904, 740)).toBeGreaterThan(0.003);
+});
+
 test('live browser observes an agent edit and downloads a GLB export', async ({
   page,
   request,

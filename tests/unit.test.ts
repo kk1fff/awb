@@ -4,7 +4,7 @@ import { emptyScene, sceneSchema, toolSchemas, type SceneObject } from '../src/s
 import { buildWorld, disposeWorld, geometry } from '../src/client/world.js';
 import { buildBuiltinModel } from '../src/client/assets.js';
 import { builtinAssets, builtinAssetMap } from '../src/shared/assets.js';
-import { Box3, Mesh, Vector3 } from 'three';
+import { Box3, Color, DirectionalLight, Mesh, Vector3 } from 'three';
 
 describe('scene command invariants', () => {
   it('creates defaults, patches only supplied fields, and keeps IDs stable', () => {
@@ -133,6 +133,54 @@ describe('geometry and renderer mapping', () => {
     expect(mesh.scale.toArray()).toEqual([4, 3, 2]);
     expect(mesh.rotation.x).toBeCloseTo(Math.PI / 2);
     expect(mesh.visible).toBe(false);
+    disposeWorld(world);
+  });
+
+  it('defaults legacy lighting to its existing solid background and hard PCF shadow', async () => {
+    const legacy = emptyScene();
+    const { backgroundMode: _mode, backgroundColor: _color, ...oldLighting } = legacy.lighting;
+    const { shadowSoftness: _softness, ...oldDirectional } = oldLighting.directional;
+    const engine = new SceneEngine();
+    engine.load({
+      ...legacy,
+      lighting: { ...oldLighting, directional: oldDirectional },
+    });
+    const parsed = engine.snapshot();
+    expect(parsed.lighting.backgroundMode).toBe('solid');
+    expect(parsed.lighting.directional.shadowSoftness).toBe(0);
+    const world = await buildWorld(parsed);
+    const sun = world.children.find((o) => o instanceof DirectionalLight) as DirectionalLight;
+    expect((world.background as Color).getHexString()).toBe('e9ede5');
+    expect(sun.shadow.radius).toBe(1);
+    expect(sun.shadow.mapSize.toArray()).toEqual([2048, 2048]);
+    expect(sun.shadow.bias).toBe(-0.0005);
+    disposeWorld(world);
+  });
+
+  it('uses selected environment independently for the visible background and maps softness to PCF radius', async () => {
+    const solidWithEnvironment = sceneSchema.parse({
+      ...emptyScene(),
+      lighting: { ...emptyScene().lighting, environmentAssetId: 'builtin:pnw-overcast' },
+    });
+    const solidWorld = await buildWorld(solidWithEnvironment);
+    expect((solidWorld.background as Color).getHexString()).toBe('b9c6c5');
+    disposeWorld(solidWorld);
+
+    const scene = sceneSchema.parse({
+      ...emptyScene(),
+      lighting: {
+        ...emptyScene().lighting,
+        environmentAssetId: 'builtin:pnw-overcast',
+        backgroundMode: 'environment',
+        directional: { ...emptyScene().lighting.directional, shadowSoftness: 2.5 },
+      },
+    });
+    const world = await buildWorld(scene);
+    const sun = world.children.find((o) => o instanceof DirectionalLight) as DirectionalLight;
+    expect(world.background).toBe(world.environment);
+    expect(world.environmentIntensity).toBe(0.55);
+    expect(sun.shadow.radius).toBe(6);
+    expect(sun.shadow.mapSize.toArray()).toEqual([2048, 2048]);
     disposeWorld(world);
   });
 

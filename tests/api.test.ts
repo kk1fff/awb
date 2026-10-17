@@ -305,6 +305,50 @@ describe('public tool API', () => {
     expect(state.lighting.ambient.color).toBe('#ffffff');
     expect((await call('set_camera', { verticalSize: 12 })).sceneRevision).toBe(7);
   });
+  it('validates, merges and persists background and shadow lighting controls', async () => {
+    const initial = await get<Scene>('/api/state');
+    expect(initial.lighting.backgroundMode).toBe('solid');
+    expect(initial.lighting.backgroundColor).toBeUndefined();
+    expect(initial.lighting.directional.shadowSoftness).toBe(0);
+
+    const changed = await call('set_lighting', {
+      backgroundMode: 'environment',
+      backgroundColor: '#123456',
+      directional: { shadowSoftness: 3 },
+    });
+    expect(changed.success).toBe(true);
+    const changedScene = await get<Scene>('/api/state');
+    expect(changedScene.lighting).toMatchObject({
+      backgroundMode: 'environment', backgroundColor: '#123456',
+      directional: { shadowSoftness: 3, color: initial.lighting.directional.color,
+        intensity: initial.lighting.directional.intensity, position: initial.lighting.directional.position },
+    });
+    const partial = await call('set_lighting', { ambient: { intensity: 0.7 } });
+    expect(partial.success).toBe(true);
+    expect((await get<Scene>('/api/state')).lighting).toMatchObject({
+      backgroundMode: 'environment', backgroundColor: '#123456', directional: { shadowSoftness: 3 },
+    });
+
+    for (const args of [
+      { backgroundMode: 'gradient' },
+      { backgroundColor: 'blue' },
+      { directional: { shadowSoftness: -0.1 } },
+      { directional: { shadowSoftness: 4.1 } },
+    ]) {
+      const rejected = await call('set_lighting', args);
+      expect(rejected.success).toBe(false);
+      expect(rejected.error?.code).toBe('VALIDATION_ERROR');
+    }
+    const saved = await call('save_scene', { name: 'lighting-controls' });
+    const fresh = await createApp({ ...service.options, runId: 'lighting-controls-fresh' });
+    const loaded = await fresh.service.execute({ tool: 'load_scene', arguments: { name: 'lighting-controls' } });
+    expect(loaded.success).toBe(true);
+    expect(fresh.service.engine.snapshot().lighting).toEqual((await get<Scene>('/api/state')).lighting);
+
+    expect((await call('set_lighting', { backgroundColor: null })).success).toBe(true);
+    expect((await get<Scene>('/api/state')).lighting.backgroundColor).toBeUndefined();
+    expect(saved.success).toBe(true);
+  });
   it('persists partial perspective camera updates and rejects invalid FOV', async () => {
     const initial = await get<Scene>('/api/state');
     const projection = await call('set_camera', { projection: 'perspective' });

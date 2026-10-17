@@ -75,8 +75,14 @@ export const cameraSchema = z
     path: ['position'],
   });
 const ambient = z.object({ color, intensity: z.number().min(0).max(10) }).strict();
-const directional = ambient.extend({ position: vector });
-export const lightingSchema = z.object({ ambient, directional, environmentAssetId: assetId.optional() }).strict();
+const directional = ambient.extend({ position: vector, shadowSoftness: z.number().min(0).max(4).default(0) });
+export const lightingSchema = z.object({
+  ambient,
+  directional,
+  environmentAssetId: assetId.optional(),
+  backgroundMode: z.enum(['solid', 'environment']).default('solid'),
+  backgroundColor: color.optional(),
+}).strict();
 export const sceneSchema = z
   .object({
     schemaVersion: z.literal(2),
@@ -121,8 +127,10 @@ export const toolSchemas = {
   set_lighting: z
     .object({
       ambient: ambient.partial().optional(),
-      directional: directional.partial().optional(),
+      directional: directional.partial().extend({ shadowSoftness: z.number().min(0).max(4).optional() }).optional(),
       environmentAssetId: assetId.nullable().optional(),
+      backgroundMode: z.enum(['solid', 'environment']).optional(),
+      backgroundColor: color.nullable().optional(),
     })
     .strict(),
   render_scene: z.object({ label: z.string().trim().min(1).max(120).optional() }).strict(),
@@ -212,7 +220,8 @@ export function emptyScene(): Scene {
     },
     lighting: {
       ambient: { color: '#ffffff', intensity: 1.5 },
-      directional: { color: '#fff4dc', intensity: 3, position: [8, 14, 5] },
+      directional: { color: '#fff4dc', intensity: 3, position: [8, 14, 5], shadowSoftness: 0 },
+      backgroundMode: 'solid',
     },
   };
 }
