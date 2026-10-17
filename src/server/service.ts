@@ -1,0 +1,144 @@
+import { randomUUID } from 'node:crypto';
+import { appendFile, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import path from 'node:path';
+import { z } from 'zod';
+import { SceneEngine, ToolError } from '../engine/scene.js';
+import { toolSchemas, type Checkpoint, type Review, type ToolEvent, type ToolName, type ToolResponse } from '../shared/schema.js';
+import { capture, type Capture } from './capture.js';
+
+export interface ServiceOptions {
+  dataDir: string; artifactsDir: string; runId: string; clientUrl: string; capture?: Capture;
+}
+export async function atomicJson(file: string, value: unknown): Promise<void> {
+  const temp = `${file}.${randomUUID()}.tmp`;
+  await writeFile(temp, JSON.stringify(value, null, 2)); await rename(temp, file);
+}
+const envelope = z.object({ tool: z.string(), arguments: z.unknown() }).strict();
+
+export class ToolService {
+  readonly engine = new SceneEngine();
+  readonly events: ToolEvent[] = [];
+  readonly checkpoints: Checkpoint[] = [];
+  readonly reviews: Review[] = [];
+  readonly runDir: string;
+  private queue: Promise<unknown> = Promise.resolve();
+  constructor(readonly options: ServiceOptions) {
+    if (!/^[a-zA-Z0-9][\w-]{0,99}$/.test(options.runId)) throw new Error('Invalid RUN_ID');
+    this.runDir = path.resolve(options.artifactsDir, options.runId);
+  }
+  async init(): Promise<void> {
+    await mkdir(path.join(this.options.dataDir, 'scenes'), { recursive: true });
+    await mkdir(path.dirname(this.runDir), { recursive: true });
+    try { await mkdir(this.runDir); }
+    catch (error) { throw new Error(`Cannot create run ${this.options.runId}; choose a new RUN_ID. ${String(error)}`); }
+    await mkdir(path.join(this.runDir, 'checkpoints'));
+    await writeFile(path.join(this.runDir, 'events.jsonl'), '');
+    await writeFile(path.join(this.runDir, 'reviews.jsonl'), '');
+  }
+  execute(input: unknown, rejection?: ToolError): Promise<ToolResponse> {
+    const next = this.queue.then(() => this.run(input, rejection));
+    this.queue = next.catch(() => undefined); return next;
+  }
+  private async run(input: unknown, rejection?: ToolError): Promise<ToolResponse> {
+    const executionId = randomUUID(); const timestamp = new Date().toISOString();
+    const previous = this.engine.snapshot();
+    let tool = 'invalid_request'; let args: unknown = input;
+    let response: ToolResponse;
+    try {
+      const request = envelope.parse(input); tool = request.tool; args = request.arguments;
+      if (rejection) throw rejection;
+      if (!Object.hasOwn(toolSchemas, tool)) throw new ToolError('UNKNOWN_TOOL', `Unknown tool '${tool}'. Fetch GET /api/tools for supported operations.`);
+      const validated = toolSchemas[tool as ToolName].parse(args) as Record<string, unknown>;
+      const result = await this.dispatch(tool as ToolName, validated, executionId, timestamp);
+      response = { success: true, executionId, sceneRevision: this.engine.snapshot().revision, result };
+    } catch (error) {
+      this.engine.restore(previous);
+      const code = error instanceof z.ZodError ? 'VALIDATION_ERROR' : error instanceof ToolError ? error.code : 'IO_ERROR';
+      response = {
+        success: false, executionId, sceneRevision: previous.revision,
+        error: {
+          code, message: error instanceof z.ZodError ? 'Invalid arguments; inspect details and GET /api/tools.' : error instanceof Error ? error.message : String(error),
+          ...(error instanceof z.ZodError ? { details: error.issues } : error instanceof ToolError && error.details ? { details: error.details } : {}),
+        },
+      };
+    }
+    const event: ToolEvent = { ...response, timestamp, tool, arguments: args, runId: this.options.runId };
+    try {
+      await appendFile(path.join(this.runDir, 'events.jsonl'), `${JSON.stringify(event)}\n`);
+      this.events.push(event);
+    } catch (error) {
+      this.engine.restore(previous);
+      console.error('Cannot record execution event', error);
+      return { success: false, executionId, sceneRevision: previous.revision, error: { code: 'HISTORY_WRITE_FAILED', message: 'Cannot persist execution history. Scene mutation was rolled back; check storage.' } };
+    }
+    return response;
+  }
+  private async dispatch(tool: ToolName, args: Record<string, unknown>, executionId: string, timestamp: string): Promise<unknown> {
+    if (tool === 'save_scene') {
+      const scene = this.engine.snapshot(); const name = args.name as string;
+      const file = path.resolve(this.options.dataDir, 'scenes', `${name}.json`);
+      // Keep scene JSON directly loadable, with provenance alongside it.
+      await atomicJson(file, scene);
+      await atomicJson(path.join(this.runDir, 'scene.json'), scene);
+      await atomicJson(path.join(this.runDir, `save-${executionId}.json`), { name, executionId, sceneRevision: scene.revision, timestamp, scene });
+      return { name, path: file, executionId, sceneRevision: scene.revision };
+    }
+    if (tool === 'load_scene') {
+      const file = path.resolve(this.options.dataDir, 'scenes', `${String(args.name)}.json`);
+      let content: string;
+      try { content = await readFile(file, 'utf8'); }
+      catch (e) {
+        if ((e as NodeJS.ErrnoException).code === 'ENOENT') throw new ToolError('SAVE_NOT_FOUND', `No save named '${String(args.name)}'. Create it with save_scene first.`);
+        throw e;
+      }
+      let value: unknown;
+      try { value = JSON.parse(content); } catch { throw new ToolError('INVALID_SCENE', 'Saved scene contains invalid JSON'); }
+      return this.engine.load(value);
+    }
+    if (tool === 'render_scene') return this.render(args.label as string | undefined, executionId, timestamp);
+    if (tool === 'record_review') {
+      const review = { ...args, executionId, timestamp, sceneRevision: this.engine.snapshot().revision } as Review;
+      if (review.checkpointId && !this.checkpoints.some(c => c.id === review.checkpointId))
+        throw new ToolError('CHECKPOINT_NOT_FOUND', 'Use GET /api/checkpoints to find a checkpoint in this run.');
+      const checkpoint = this.checkpoints.find(c => c.id === review.checkpointId);
+      if (checkpoint) review.sceneRevision = checkpoint.sceneRevision;
+      if (review.kind === 'approval' && checkpoint?.status !== 'complete')
+        throw new ToolError('CHECKPOINT_INCOMPLETE', 'Only a successfully rendered checkpoint can be approved.');
+      for (const id of review.executionIds)
+        if (!this.events.some(e => e.executionId === id)) throw new ToolError('EXECUTION_NOT_FOUND', `No execution ${id} in this run.`);
+      await appendFile(path.join(this.runDir, 'reviews.jsonl'), `${JSON.stringify(review)}\n`);
+      this.reviews.push(review);
+      const notes = this.reviews.map(r => `## ${r.kind} · ${r.author}\n\n${r.text}\n\nCheckpoint: ${r.checkpointId ?? '—'}\nExecution: ${r.executionId}\nEvidence: ${r.executionIds.join(', ')}\n`).join('\n');
+      await writeFile(path.join(this.runDir, 'review.md'), `# Run ${this.options.runId}\n\n${notes}`);
+      const issues = this.reviews.filter(r => r.kind === 'tool_issue').map(r => `## Issue\n\nTask / Problem:\n${r.text}\n\nSuggested Improvement:\n${r.suggestion}\n\nImpact:\n${r.impact}\n\nEvidence:\n${r.executionIds.join(', ')}\n`).join('\n');
+      await writeFile(path.join(this.runDir, 'tool-feedback.md'), `# Tool feedback\n\nRun: ${this.options.runId}\n\n${issues}`);
+      return review;
+    }
+    return this.engine.execute(tool, args);
+  }
+  private async render(label: string | undefined, executionId: string, timestamp: string): Promise<Checkpoint> {
+    const id = randomUUID(); const scene = this.engine.snapshot();
+    const dir = path.join(this.runDir, 'checkpoints', id); await mkdir(dir);
+    const checkpoint: Checkpoint = {
+      id, label: label ?? `Revision ${scene.revision}`, executionId, timestamp,
+      sceneRevision: scene.revision, status: 'rendering', sceneUrl: `/api/checkpoints/${id}/scene`,
+    };
+    await atomicJson(path.join(dir, 'scene.json'), scene);
+    this.checkpoints.push(checkpoint);
+    await atomicJson(path.join(dir, 'checkpoint.json'), checkpoint);
+    try {
+      const output = path.join(dir, 'scene.png');
+      await (this.options.capture ?? capture)(`${this.options.clientUrl}/?checkpoint=${id}`, output);
+      Object.assign(checkpoint, {
+        status: 'complete', screenshotPath: output, screenshotUrl: `/artifacts/checkpoints/${id}/scene.png`,
+      });
+      await atomicJson(path.join(dir, 'checkpoint.json'), checkpoint);
+      return structuredClone(checkpoint);
+    } catch (error) {
+      checkpoint.status = 'failed'; checkpoint.error = String(error);
+      delete checkpoint.screenshotPath; delete checkpoint.screenshotUrl;
+      await atomicJson(path.join(dir, 'checkpoint.json'), checkpoint);
+      throw new ToolError('RENDER_FAILED', 'Screenshot capture failed. Check renderer/browser diagnostics and retry.', { checkpointId: id, diagnostics: checkpoint.error });
+    }
+  }
+}
