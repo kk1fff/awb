@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 import { SceneEngine } from '../src/engine/scene.js';
 import { emptyScene, sceneSchema, toolSchemas, type SceneObject } from '../src/shared/schema.js';
 import { buildWorld, disposeWorld, geometry } from '../src/client/world.js';
-import { Mesh } from 'three';
+import { buildBuiltinModel } from '../src/client/assets.js';
+import { builtinAssets, builtinAssetMap } from '../src/shared/assets.js';
+import { Box3, Mesh, Vector3 } from 'three';
 
 describe('scene command invariants', () => {
   it('creates defaults, patches only supplied fields, and keeps IDs stable', () => {
@@ -115,5 +117,33 @@ describe('geometry and renderer mapping', () => {
     expect(mesh.rotation.x).toBeCloseTo(Math.PI / 2);
     expect(mesh.visible).toBe(false);
     disposeWorld(world);
+  });
+
+  it('keeps locally authored builtin models within their stable catalog bounds', () => {
+    for (const asset of builtinAssets.filter((item) => item.kind === 'model')) {
+      const model = buildBuiltinModel(asset.id);
+      const record = builtinAssetMap.get(asset.id)!;
+      const bounds = record.bounds!;
+      model.updateMatrixWorld(true);
+      const actual = new Box3().setFromObject(model).getSize(new Vector3());
+      expect(actual.x, `${asset.id} width`).toBeLessThanOrEqual(bounds[0] + 0.01);
+      expect(actual.y, `${asset.id} height`).toBeLessThanOrEqual(bounds[1] + 0.01);
+      expect(actual.z, `${asset.id} depth`).toBeLessThanOrEqual(bounds[2] + 0.01);
+      const vertexCount = model.children.reduce((count, child) => {
+        return count + ((child as Mesh).geometry?.attributes.position?.count ?? 0);
+      }, 0);
+      if (asset.id === 'builtin:pnw-craftsman-shell') {
+        expect(model.children.length).toBeLessThan(10);
+        expect(vertexCount).toBeGreaterThan(2000);
+      }
+      if (asset.id === 'builtin:pnw-gable-roof') {
+        expect(model.children.length).toBeLessThan(10);
+        expect(vertexCount).toBeGreaterThan(3000);
+      }
+      if (asset.id === 'builtin:pnw-evergreen') {
+        expect(model.children.length).toBeLessThan(20);
+        expect(vertexCount).toBeGreaterThan(5000);
+      }
+    }
   });
 });
