@@ -36,6 +36,64 @@ test('@smoke renders a public-API object in Linux Chromium with no browser error
   await page.screenshot({ path: 'artifacts/tests/studio-smoke.png', fullPage: true });
   expect(errors).toEqual([]);
 });
+
+test('public lighting controls produce a visible change in a fixed-scene render', async ({
+  page,
+  request,
+}) => {
+  await tool(request, 'create_object', {
+    name: 'Lighting response target',
+    type: 'box',
+    dimensions: [3, 3, 3],
+    color: '#b7a58a',
+    roughness: 0.8,
+  });
+  await tool(request, 'set_camera', {
+    position: [8, 8, 8],
+    target: [0, 0, 0],
+    verticalSize: 9,
+  });
+  await page.goto('/');
+
+  const captureMean = async (ambientIntensity: number, directionalIntensity: number) => {
+    await tool(request, 'set_lighting', {
+      ambient: { color: '#ffffff', intensity: ambientIntensity },
+      directional: {
+        color: '#ffffff',
+        intensity: directionalIntensity,
+        position: [5, 8, 6],
+      },
+    });
+    const checkpoint = (await tool(request, 'render_scene', {
+      label: `Lighting ambient ${ambientIntensity} directional ${directionalIntensity}`,
+    })).result as Checkpoint;
+    const response = await request.get(checkpoint.screenshotUrl!);
+    expect(response.ok()).toBe(true);
+    const encoded = (await response.body()).toString('base64');
+    return page.evaluate(async (base64) => {
+      const image = new Image();
+      image.src = `data:image/png;base64,${base64}`;
+      await image.decode();
+      const canvas = document.createElement('canvas');
+      canvas.width = image.width;
+      canvas.height = image.height;
+      const context = canvas.getContext('2d')!;
+      context.drawImage(image, 0, 0);
+      const { data } = context.getImageData(362, 254, 300, 260);
+      let luminance = 0;
+      for (let i = 0; i < data.length; i += 4)
+        luminance += 0.2126 * data[i]! + 0.7152 * data[i + 1]! + 0.0722 * data[i + 2]!;
+      return luminance / (data.length / 4);
+    }, encoded);
+  };
+
+  const unlit = await captureMean(0, 0);
+  const ambientLit = await captureMean(8, 0);
+  const directionalLit = await captureMean(0, 8);
+  expect(ambientLit - unlit, `ambient response: ${unlit} -> ${ambientLit}`).toBeGreaterThan(8);
+  expect(directionalLit - unlit, `directional response: ${unlit} -> ${directionalLit}`).toBeGreaterThan(8);
+});
+
 test('live browser observes an agent edit and downloads a GLB export', async ({
   page,
   request,
