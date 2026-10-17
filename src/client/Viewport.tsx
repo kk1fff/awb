@@ -47,7 +47,27 @@ export function Viewport({
     let observer: ResizeObserver | undefined;
     let animation = 0;
     let disposed = false;
+    let renderScheduled = false;
+    let renderedFrames = 0;
+    let camera: THREE.OrthographicCamera | undefined;
     let pointer: { x: number; y: number } | undefined;
+    const scheduleRender = () => {
+      if (disposed || renderScheduled || !world || !camera) return;
+      renderScheduled = true;
+      animation = requestAnimationFrame(() => {
+        renderScheduled = false;
+        if (disposed || !world || !camera) return;
+        renderer.render(world, camera);
+        if (++renderedFrames === 2) {
+          window.__sceneReady = {
+            revision: scene.revision,
+            objectIds: scene.objects.filter((o) => o.visible).map((o) => o.id),
+          };
+        } else {
+          scheduleRender();
+        }
+      });
+    };
     const contextLost = (event: Event) => {
       event.preventDefault();
       const message = 'WebGL context lost. Reload the viewport to recover.';
@@ -69,7 +89,7 @@ export function Viewport({
         !captureMode && localView.current?.canonical === canonical
           ? localView.current.camera
           : scene.camera;
-      const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 1000);
+      camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 1000);
       camera.position.fromArray(view.position);
       camera.lookAt(new THREE.Vector3(...view.target));
       controls = new OrbitControls(camera, renderer.domElement);
@@ -84,28 +104,32 @@ export function Viewport({
         const height = element.clientHeight;
         const half = view.verticalSize / 2;
         const aspect = width / Math.max(height, 1);
-        Object.assign(camera, {
+        Object.assign(camera!, {
           left: -half * aspect,
           right: half * aspect,
           top: half,
           bottom: -half,
         });
-        camera.updateProjectionMatrix();
+        camera!.updateProjectionMatrix();
         renderer.setSize(width, height);
+        scheduleRender();
       };
       observer = new ResizeObserver(resize);
       observer.observe(element);
       resize();
       const reportCamera = () => {
         const current = {
-          position: camera.position.toArray(),
+          position: camera!.position.toArray(),
           target: controls!.target.toArray(),
-          verticalSize: view.verticalSize / camera.zoom,
+          verticalSize: view.verticalSize / camera!.zoom,
         };
         if (!captureMode) localView.current = { canonical, camera: current };
         callbacks.current.onCamera?.(current);
       };
-      controls.addEventListener('change', reportCamera);
+      controls.addEventListener('change', () => {
+        reportCamera();
+        scheduleRender();
+      });
       reportCamera();
       down = (event) => { pointer = { x: event.clientX, y: event.clientY }; };
       up = (event) => {
@@ -117,24 +141,14 @@ export function Viewport({
             ((event.clientX - rect.left) / rect.width) * 2 - 1,
             (-(event.clientY - rect.top) / rect.height) * 2 + 1,
           ),
-          camera,
+          camera!,
         );
         const hit = ray.intersectObjects(world!.children, true).find((h) => h.object.visible && h.object.userData.id);
         if (hit) callbacks.current.onSelect?.(hit.object.userData.id as string);
       };
       renderer.domElement.addEventListener('pointerdown', down);
       renderer.domElement.addEventListener('pointerup', up);
-      let frames = 0;
-      const frame = () => {
-        renderer.render(world!, camera);
-        if (++frames === 2)
-          window.__sceneReady = {
-            revision: scene.revision,
-            objectIds: scene.objects.filter((o) => o.visible).map((o) => o.id),
-          };
-        animation = requestAnimationFrame(frame);
-      };
-      frame();
+      scheduleRender();
     }).catch((error) => {
       const message = `Scene asset loading failed: ${String(error)}`;
       window.__sceneError = message;

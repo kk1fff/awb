@@ -254,16 +254,41 @@ test('agent can search, build, inspect, correct, save and export a PNW Craftsman
   await place('builtin:pnw-stone-path', 'Stone path near porch', [0, -2.93, -5.5]);
   await place('builtin:pnw-stone-path', 'Stone path to garden', [0, -2.93, -7.5]);
 
+  await page.addInitScript(() => {
+    const instrumented = window as Window & { __fieldworkRafCalls?: number };
+    instrumented.__fieldworkRafCalls = 0;
+    const requestFrame = window.requestAnimationFrame.bind(window);
+    window.requestAnimationFrame = (callback) => {
+      instrumented.__fieldworkRafCalls!++;
+      return requestFrame(callback);
+    };
+  });
   await page.goto('/');
   await expect(page.getByRole('heading', { name: 'A world in the making.' })).toBeVisible();
   await expect.poll(() => page.evaluate(() => window.__sceneReady?.objectIds.length)).toBeGreaterThan(10);
+  const readyFrames = await page.evaluate(
+    () => (window as Window & { __fieldworkRafCalls?: number }).__fieldworkRafCalls ?? 0,
+  );
+  await page.waitForTimeout(300);
+  expect(
+    await page.evaluate(() => (window as Window & { __fieldworkRafCalls?: number }).__fieldworkRafCalls ?? 0),
+  ).toBe(readyFrames);
   const before = (await tool(request, 'render_scene', { label: 'PNW house before correction' })).result as Checkpoint;
   const outputDir = 'artifacts/tests';
   await mkdir(outputDir, { recursive: true });
   const beforePng = await (await request.get(before.screenshotUrl!)).body();
   await writeFile(`${outputDir}/pnw-house-before.png`, beforePng);
 
-  await tool(request, 'update_object', { id: overlappingWindow.id, name: 'West divided-light window', position: [-2.75, -0.1, -3.12] });
+  const corrected = await tool(request, 'update_object', { id: overlappingWindow.id, name: 'West divided-light window', position: [-2.75, -0.1, -3.12] });
+  await expect.poll(() => page.evaluate(() => window.__sceneReady?.revision)).toBe(corrected.sceneRevision);
+  const correctedFrames = await page.evaluate(
+    () => (window as Window & { __fieldworkRafCalls?: number }).__fieldworkRafCalls ?? 0,
+  );
+  expect(correctedFrames).toBeGreaterThan(readyFrames);
+  await page.waitForTimeout(300);
+  expect(
+    await page.evaluate(() => (window as Window & { __fieldworkRafCalls?: number }).__fieldworkRafCalls ?? 0),
+  ).toBe(correctedFrames);
   const after = (await tool(request, 'render_scene', { label: 'PNW house after correction' })).result as Checkpoint;
   const afterPng = await (await request.get(after.screenshotUrl!)).body();
   await writeFile(`${outputDir}/pnw-house-after.png`, afterPng);
