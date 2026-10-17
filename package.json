@@ -16,7 +16,8 @@
     "test:smoke": "playwright test --grep @smoke",
     "test:e2e": "playwright test",
     "tool": "tsx src/cli.ts",
-    "demo:garden": "tsx scripts/garden.ts"
+    "demo:garden": "tsx scripts/garden.ts",
+    "format:check": "prettier --check src scripts tests docs README.md agent-process-feedback.md *.json *.ts index.html public"
   },
   "dependencies": {
     "@fontsource/dm-sans": "^5.3.0",

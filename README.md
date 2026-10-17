@@ -57,15 +57,15 @@ Named saves: `data/scenes/<name>.json`. Run evidence: `artifacts/runs/<run-id>/`
 
 Generated output is ignored by Git. Keep artifacts to revisit a run; the live API/UI expose the current run. Older runs remain available on disk. Reusing an existing `RUN_ID` is rejected to protect evidence.
 
-| Variable | Default | Purpose |
-|---|---|---|
-| `PORT` | `3001` | API / production UI port |
-| `VITE_PORT` | `5173` | Development UI port |
-| `CLIENT_URL` | Development UI, or production API origin | URL reachable by screenshot browser |
-| `DATA_DIR` | `data` | Named saves |
-| `ARTIFACTS_DIR` | `artifacts/runs` | Run directory parent |
-| `RUN_ID` | Timestamp + random suffix | New run identifier |
-| `SCENE_API` | `http://127.0.0.1:3001` | CLI / demo API base |
+| Variable        | Default                                  | Purpose                             |
+| --------------- | ---------------------------------------- | ----------------------------------- |
+| `PORT`          | `3001`                                   | API / production UI port            |
+| `VITE_PORT`     | `5173`                                   | Development UI port                 |
+| `CLIENT_URL`    | Development UI, or production API origin | URL reachable by screenshot browser |
+| `DATA_DIR`      | `data`                                   | Named saves                         |
+| `ARTIFACTS_DIR` | `artifacts/runs`                         | Run directory parent                |
+| `RUN_ID`        | Timestamp + random suffix                | New run identifier                  |
+| `SCENE_API`     | `http://127.0.0.1:3001`                  | CLI / demo API base                 |
 
 For a custom development API port, update the Vite proxy environment as described in the tool guide.
 
@@ -80,6 +80,8 @@ npm run test:e2e
 ```
 
 Browser tests build and launch a disposable production server on port 4173, with isolated temporary storage. Screenshots are written to `artifacts/tests/`; failure traces go to `test-results/`. Browser tests verify behavior, not aesthetic quality. A complete MVP review also requires actual PNG inspection, an evidence-based correction, and a fresh-process reload.
+
+See [the MVP verification report](docs/mvp-validation.md) for the checks actually run, visual findings, and local demonstration artifacts.
 
 ## Limits
 

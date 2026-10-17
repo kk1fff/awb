@@ -15,12 +15,29 @@ function CheckpointView({ id }: { id: string }) {
   const [scene, setScene] = useState<Scene>();
   const [error, setError] = useState('');
   useEffect(() => {
-    fetch(`/api/checkpoints/${encodeURIComponent(id)}/scene`).then(async response => {
-      if (!response.ok) throw new Error(`Checkpoint load failed (${response.status})`);
-      setScene(await response.json() as Scene);
-    }).catch(error => { window.__sceneError = String(error); setError(String(error)); });
+    fetch(`/api/checkpoints/${encodeURIComponent(id)}/scene`)
+      .then(async (response) => {
+        if (!response.ok) throw new Error(`Checkpoint load failed (${response.status})`);
+        setScene((await response.json()) as Scene);
+      })
+      .catch((error) => {
+        window.__sceneError = String(error);
+        setError(String(error));
+      });
   }, [id]);
-  return <main className="capture-view">{error ? <p role="alert">{error}</p> : scene ? <Viewport scene={scene} captureMode /> : <p>Loading checkpoint…</p>}</main>;
+  return (
+    <main className="capture-view">
+      {error ? (
+        <p role="alert">{error}</p>
+      ) : scene ? (
+        <Viewport scene={scene} captureMode />
+      ) : (
+        <p>Loading checkpoint…</p>
+      )}
+    </main>
+  );
 }
 const checkpoint = new URLSearchParams(location.search).get('checkpoint');
-createRoot(document.getElementById('root')!).render(checkpoint ? <CheckpointView id={checkpoint} /> : <App />);
+createRoot(document.getElementById('root')!).render(
+  checkpoint ? <CheckpointView id={checkpoint} /> : <App />,
+);

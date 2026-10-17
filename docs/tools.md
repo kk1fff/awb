@@ -16,19 +16,19 @@ Lighting defaults: ambient `{color:"#ffffff",intensity:1.5}`, directional `{colo
 
 ## Operations
 
-| Tool | Arguments | Result |
-|---|---|---|
-| `create_object` | Required `name`, `type`: box/sphere/cylinder/cone/plane; optional object properties above | Complete object with UUID |
-| `update_object` | Required `id`; any subset of name, position, rotation, dimensions, scale, color, visible | Updated complete object |
-| `delete_object` | `id` | Deleted ID |
-| `list_objects` | `{}` | Array of complete object records |
-| `inspect_object` | `id` | Complete object record |
-| `set_camera` | Any subset of position, target, verticalSize | Complete canonical camera |
-| `set_lighting` | Partial ambient and/or directional objects; nested fields merge | Complete lighting |
-| `render_scene` | Optional `label` | Complete checkpoint metadata, PNG path/URL, snapshot URL, revision |
-| `save_scene` | `name` | Save name, absolute file path, execution ID, revision |
-| `load_scene` | `name` | Loaded scene with new active revision |
-| `record_review` | See below | Persisted review |
+| Tool             | Arguments                                                                                 | Result                                                             |
+| ---------------- | ----------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
+| `create_object`  | Required `name`, `type`: box/sphere/cylinder/cone/plane; optional object properties above | Complete object with UUID                                          |
+| `update_object`  | Required `id`; any subset of name, position, rotation, dimensions, scale, color, visible  | Updated complete object                                            |
+| `delete_object`  | `id`                                                                                      | Deleted ID                                                         |
+| `list_objects`   | `{}`                                                                                      | Array of complete object records                                   |
+| `inspect_object` | `id`                                                                                      | Complete object record                                             |
+| `set_camera`     | Any subset of position, target, verticalSize                                              | Complete canonical camera                                          |
+| `set_lighting`   | Partial ambient and/or directional objects; nested fields merge                           | Complete lighting                                                  |
+| `render_scene`   | Optional `label`                                                                          | Complete checkpoint metadata, PNG path/URL, snapshot URL, revision |
+| `save_scene`     | `name`                                                                                    | Save name, absolute file path, execution ID, revision              |
+| `load_scene`     | `name`                                                                                    | Loaded scene with new active revision                              |
+| `record_review`  | See below                                                                                 | Persisted review                                                   |
 
 All input objects reject unknown fields. Patch arrays replace whole triples. IDs/types cannot be changed by update. Scene mutations (create/update/delete/camera/lighting/load) increment revision once on success, even if values are unchanged. Read/save/render/review commands preserve revision. Failed commands preserve scene state and revision. This distinction clarifies “accepted command” in the original proposal: only accepted scene mutations advance scene revision.
 
@@ -51,13 +51,31 @@ On success, result fields include `id`, `label`, `executionId`, `sceneRevision`,
 Example evaluation:
 
 ```json
-{"tool":"record_review","arguments":{"kind":"evaluation","author":"agent","checkpointId":"<checkpoint UUID>","text":"The bench overlaps the rightmost tree in this view. Move it toward the front before accepting the scene."}}
+{
+  "tool": "record_review",
+  "arguments": {
+    "kind": "evaluation",
+    "author": "agent",
+    "checkpointId": "<checkpoint UUID>",
+    "text": "The bench overlaps the rightmost tree in this view. Move it toward the front before accepting the scene."
+  }
+}
 ```
 
 Example tool feedback:
 
 ```json
-{"tool":"record_review","arguments":{"kind":"tool_issue","author":"agent","text":"Placing nine path stones required repeated world-coordinate calculations.","executionIds":["<creation execution UUID>"],"suggestion":"Add distribute_objects with spacing and direction.","impact":"Reduce tool calls and alignment errors."}}
+{
+  "tool": "record_review",
+  "arguments": {
+    "kind": "tool_issue",
+    "author": "agent",
+    "text": "Placing nine path stones required repeated world-coordinate calculations.",
+    "executionIds": ["<creation execution UUID>"],
+    "suggestion": "Add distribute_objects with spacing and direction.",
+    "impact": "Reduce tool calls and alignment errors."
+  }
+}
 ```
 
 Feedback appears in the human UI and generates per-run `tool-feedback.md`. The MVP never modifies its own tool implementation in response to feedback.
