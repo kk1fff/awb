@@ -13,26 +13,32 @@ export const primitive = z.enum(['box', 'sphere', 'cylinder', 'cone', 'plane']);
 export const objectType = primitive.or(z.literal('asset'));
 export const assetId = z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9:_-]{1,119}$/);
 export const assetKind = z.enum(['model', 'material', 'environment']);
-export const assetSearchSchema = z.object({
-  query: z.string().trim().max(200).default(''),
-  kind: assetKind.optional(),
-  limit: z.number().int().positive().max(50).default(20),
-}).strict();
-export const assetRecordSchema = z.object({
-  id: assetId,
-  name: z.string().min(1),
-  description: z.string(),
-  kind: assetKind,
-  tags: z.array(z.string()),
-  source: z.enum(['builtin', 'local']),
-  originalFileName: z.string().min(1).max(255).optional(),
-  format: z.string().optional(),
-  file: z.string().optional(),
-  baseColor: color.optional(),
-  roughness: z.number().min(0).max(1).optional(),
-  metalness: z.number().min(0).max(1).optional(),
-  bounds: z.tuple([z.number().positive(), z.number().positive(), z.number().positive()]).optional(),
-}).strict();
+export const assetSearchSchema = z
+  .object({
+    query: z.string().trim().max(200).default(''),
+    kind: assetKind.optional(),
+    limit: z.number().int().positive().max(50).default(20),
+  })
+  .strict();
+export const assetRecordSchema = z
+  .object({
+    id: assetId,
+    name: z.string().min(1),
+    description: z.string(),
+    kind: assetKind,
+    tags: z.array(z.string()),
+    source: z.enum(['builtin', 'local']),
+    originalFileName: z.string().min(1).max(255).optional(),
+    format: z.string().optional(),
+    file: z.string().optional(),
+    baseColor: color.optional(),
+    roughness: z.number().min(0).max(1).optional(),
+    metalness: z.number().min(0).max(1).optional(),
+    bounds: z
+      .tuple([z.number().positive(), z.number().positive(), z.number().positive()])
+      .optional(),
+  })
+  .strict();
 const properties = z
   .object({
     name: z.string().trim().min(1).max(120),
@@ -47,19 +53,30 @@ const properties = z
     visible: z.boolean(),
   })
   .strict();
-export const objectSchema = properties.extend({
-  id: z.uuid(),
-  type: objectType,
-  assetId: assetId.optional(),
-  assetBounds: positiveVector.optional(),
-}).strict().superRefine((object, ctx) => {
-  if (object.type === 'asset' && !object.assetId)
-    ctx.addIssue({ code: 'custom', message: 'Asset objects require assetId', path: ['assetId'] });
-  if (object.type === 'asset' && !object.assetBounds)
-    ctx.addIssue({ code: 'custom', message: 'Asset objects require asset bounds', path: ['assetBounds'] });
-  if (object.type !== 'asset' && (object.assetId || object.assetBounds))
-    ctx.addIssue({ code: 'custom', message: 'Only asset objects may specify asset metadata', path: ['assetId'] });
-});
+export const objectSchema = properties
+  .extend({
+    id: z.uuid(),
+    type: objectType,
+    assetId: assetId.optional(),
+    assetBounds: positiveVector.optional(),
+  })
+  .strict()
+  .superRefine((object, ctx) => {
+    if (object.type === 'asset' && !object.assetId)
+      ctx.addIssue({ code: 'custom', message: 'Asset objects require assetId', path: ['assetId'] });
+    if (object.type === 'asset' && !object.assetBounds)
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Asset objects require asset bounds',
+        path: ['assetBounds'],
+      });
+    if (object.type !== 'asset' && (object.assetId || object.assetBounds))
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Only asset objects may specify asset metadata',
+        path: ['assetId'],
+      });
+  });
 export const cameraSchema = z
   .object({
     position: vector,
@@ -75,14 +92,19 @@ export const cameraSchema = z
     path: ['position'],
   });
 const ambient = z.object({ color, intensity: z.number().min(0).max(10) }).strict();
-const directional = ambient.extend({ position: vector, shadowSoftness: z.number().min(0).max(4).default(0) });
-export const lightingSchema = z.object({
-  ambient,
-  directional,
-  environmentAssetId: assetId.optional(),
-  backgroundMode: z.enum(['solid', 'environment']).default('solid'),
-  backgroundColor: color.optional(),
-}).strict();
+const directional = ambient.extend({
+  position: vector,
+  shadowSoftness: z.number().min(0).max(4).default(0),
+});
+export const lightingSchema = z
+  .object({
+    ambient,
+    directional,
+    environmentAssetId: assetId.optional(),
+    backgroundMode: z.enum(['solid', 'environment']).default('solid'),
+    backgroundColor: color.optional(),
+  })
+  .strict();
 export const sceneSchema = z
   .object({
     schemaVersion: z.literal(2),
@@ -106,9 +128,17 @@ export const toolSchemas = {
     .strict()
     .superRefine((object, ctx) => {
       if (object.type === 'asset' && !object.assetId)
-        ctx.addIssue({ code: 'custom', message: 'Asset objects require assetId', path: ['assetId'] });
+        ctx.addIssue({
+          code: 'custom',
+          message: 'Asset objects require assetId',
+          path: ['assetId'],
+        });
       if (object.type !== 'asset' && object.assetId)
-        ctx.addIssue({ code: 'custom', message: 'Only asset objects may specify assetId', path: ['assetId'] });
+        ctx.addIssue({
+          code: 'custom',
+          message: 'Only asset objects may specify assetId',
+          path: ['assetId'],
+        });
     }),
   update_object: properties.partial().extend({ id: z.uuid() }).strict(),
   delete_object: z.object({ id: z.uuid() }).strict(),
@@ -127,7 +157,10 @@ export const toolSchemas = {
   set_lighting: z
     .object({
       ambient: ambient.partial().optional(),
-      directional: directional.partial().extend({ shadowSoftness: z.number().min(0).max(4).optional() }).optional(),
+      directional: directional
+        .partial()
+        .extend({ shadowSoftness: z.number().min(0).max(4).optional() })
+        .optional(),
       environmentAssetId: assetId.nullable().optional(),
       backgroundMode: z.enum(['solid', 'environment']).optional(),
       backgroundColor: color.nullable().optional(),
@@ -137,6 +170,30 @@ export const toolSchemas = {
   export_scene: z.object({}).strict(),
   save_scene: z.object({ name: saveName }).strict(),
   load_scene: z.object({ name: saveName }).strict(),
+  promote_asset: z
+    .object({
+      sourceWorkspaceId: z.string().regex(/^(default|[0-9a-f-]{36})$/),
+      sourceAssetId: assetId.optional(),
+      sourceRunId: z
+        .string()
+        .regex(/^[a-zA-Z0-9][\w-]{0,99}$/)
+        .optional(),
+      sourceExportExecutionId: z.uuid().optional(),
+    })
+    .strict()
+    .superRefine((value, ctx) => {
+      const catalogSource =
+        Boolean(value.sourceAssetId) && !value.sourceRunId && !value.sourceExportExecutionId;
+      const exportSource =
+        !value.sourceAssetId &&
+        Boolean(value.sourceRunId) &&
+        Boolean(value.sourceExportExecutionId);
+      if (!catalogSource && !exportSource)
+        ctx.addIssue({
+          code: 'custom',
+          message: 'Provide sourceAssetId or both sourceRunId and sourceExportExecutionId.',
+        });
+    }),
   record_review: z
     .object({
       kind: z.enum(['evaluation', 'approval', 'change_request', 'tool_issue']),
@@ -180,6 +237,7 @@ export interface ToolEvent extends ToolResponse {
   tool: string;
   arguments: unknown;
   runId: string;
+  workspaceId?: string;
 }
 export interface Review extends ReviewInput {
   executionId: string;

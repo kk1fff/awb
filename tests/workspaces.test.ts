@@ -1,0 +1,247 @@
+import { afterEach, describe, expect, it } from 'vitest';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import type { Server } from 'node:http';
+import type { AddressInfo } from 'node:net';
+import { createApp } from '../src/server/app.js';
+import type { Scene, ToolResponse } from '../src/shared/schema.js';
+import { tinyGlb } from './helpers/assets.js';
+
+describe('isolated workspaces', () => {
+  let root: string;
+  let server: Server | undefined;
+  let base = '';
+  afterEach(async () => {
+    if (server) await new Promise<void>((resolve) => server!.close(() => resolve()));
+    if (root) await rm(root, { recursive: true, force: true });
+  });
+  it('isolates concurrent scene/assets/events/saves/checkpoints, promotes lineage, and reopens saved work', async () => {
+    root = await mkdtemp(path.join(tmpdir(), 'fieldwork-workspaces-'));
+    const options = {
+      dataDir: path.join(root, 'data'),
+      artifactsDir: path.join(root, 'runs'),
+      runId: 'default-one',
+      clientUrl: '',
+      capture: async (_url: string, output: string) => writeFile(output, 'captured'),
+    };
+    const app = await createApp(options);
+    server = app.app.listen(0, '127.0.0.1');
+    await new Promise<void>((resolve) => server!.on('listening', resolve));
+    base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    options.clientUrl = base;
+    const request = async (route: string, init?: RequestInit) => fetch(`${base}${route}`, init);
+    const createWorkspace = async (name: string) => {
+      const response = await request('/api/workspaces', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name }),
+      });
+      expect(response.status).toBe(201);
+      return ((await response.json()) as { workspace: { id: string; runId: string } }).workspace;
+    };
+    const a = await createWorkspace('Specialist A');
+    const b = await createWorkspace('Specialist B');
+    const api = (id: string, suffix: string) => `/api/workspaces/${id}${suffix}`;
+    const described = (await (await request(api(a.id, ''))).json()) as {
+      workspace: { active: boolean; runId: string };
+    };
+    expect(described.workspace).toMatchObject({ active: true, runId: a.runId });
+    const listed = (await (await request('/api/workspaces')).json()) as {
+      workspaces: Array<{ id: string }>;
+    };
+    expect(listed.workspaces.map((workspace) => workspace.id)).toContain(a.id);
+    const defaultEventsBeforeMalformed = (await (await request('/api/events')).json()) as unknown[];
+    const malformedScoped = await request(api(a.id, '/tools'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{',
+    });
+    expect(malformedScoped.status).toBe(400);
+    expect((await (await request('/api/events')).json()) as unknown[]).toEqual(
+      defaultEventsBeforeMalformed,
+    );
+    const invalidScopedImport = await request(api(a.id, '/assets/import'), {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/octet-stream',
+        'X-Asset-Name': 'Invalid model',
+        'X-Asset-File-Name': 'invalid.glb',
+        'X-Asset-Tags': '%5B%5D',
+      },
+      body: Uint8Array.from(Buffer.from('invalid-glb')),
+    });
+    expect(invalidScopedImport.status).toBe(400);
+    expect(await invalidScopedImport.json()).toMatchObject({
+      error: { code: 'INVALID_ASSET_FILE' },
+    });
+    const tool = async (workspace: string, name: string, args: unknown = {}) => {
+      const response = await request(api(workspace, '/tools'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tool: name, arguments: args }),
+      });
+      return response.json() as Promise<ToolResponse>;
+    };
+    const results = await Promise.all([
+      tool(a.id, 'create_object', { name: 'A only', type: 'box' }),
+      tool(b.id, 'create_object', { name: 'B only', type: 'sphere' }),
+    ]);
+    expect(results.map((result) => result.sceneRevision)).toEqual([1, 1]);
+    expect(
+      ((await (await request(api(a.id, '/state'))).json()) as Scene).objects.map(
+        (object) => object.name,
+      ),
+    ).toEqual(['A only']);
+    expect(
+      ((await (await request(api(b.id, '/state'))).json()) as Scene).objects.map(
+        (object) => object.name,
+      ),
+    ).toEqual(['B only']);
+    await Promise.all([
+      tool(a.id, 'save_scene', { name: 'same' }),
+      tool(b.id, 'save_scene', { name: 'same' }),
+    ]);
+    expect(
+      await readFile(path.join(root, 'data/workspaces', a.id, 'scenes/same.json'), 'utf8'),
+    ).not.toEqual(
+      await readFile(path.join(root, 'data/workspaces', b.id, 'scenes/same.json'), 'utf8'),
+    );
+    const importAsset = async (id: string, label: string) =>
+      request(api(id, '/assets/import'), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/octet-stream',
+          'X-Asset-Name': encodeURIComponent(label),
+          'X-Asset-File-Name': 'model.glb',
+          'X-Asset-Tags': '%5B%22local%22%5D',
+        },
+        body: Uint8Array.from(tinyGlb()),
+      });
+    const imported = await importAsset(a.id, 'Specialist tree');
+    expect(imported.status).toBe(201);
+    const sourceAsset = ((await imported.json()) as { asset: { id: string } }).asset;
+    const promoted = await tool(b.id, 'promote_asset', {
+      sourceWorkspaceId: a.id,
+      sourceAssetId: sourceAsset.id,
+    });
+    expect(promoted.success).toBe(true);
+    const targetAsset = (promoted.result as { asset: { id: string }; lineage: unknown }).asset;
+    expect(targetAsset.id).not.toBe(sourceAsset.id);
+    expect((promoted.result as { lineage: unknown }).lineage).toEqual({
+      sourceWorkspaceId: a.id,
+      sourceAssetId: sourceAsset.id,
+    });
+    expect(
+      (await tool(b.id, 'search_assets', { query: 'Specialist tree', kind: 'model' })).result,
+    ).toEqual([targetAsset]);
+    expect(
+      (await tool(a.id, 'search_assets', { query: 'Specialist tree', kind: 'model' })).result,
+    ).toEqual([sourceAsset]);
+    const exportResult = await tool(a.id, 'export_scene', {});
+    expect(exportResult.success).toBe(true);
+    const exportValue = exportResult.result as { fileName: string };
+    const promotedExport = await tool(b.id, 'promote_asset', {
+      sourceWorkspaceId: a.id,
+      sourceRunId: a.runId,
+      sourceExportExecutionId: exportResult.executionId,
+    });
+    expect(promotedExport.success).toBe(true);
+    expect((promotedExport.result as { lineage: unknown }).lineage).toEqual({
+      sourceWorkspaceId: a.id,
+      sourceRunId: a.runId,
+      sourceExportExecutionId: exportResult.executionId,
+    });
+    expect(
+      (promotedExport.result as { asset: { originalFileName: string } }).asset.originalFileName,
+    ).toBe(exportValue.fileName);
+    const rendered = await tool(a.id, 'render_scene', { label: 'A checkpoint' });
+    expect(rendered.success).toBe(true);
+    const checkpoint = rendered.result as { id: string; screenshotUrl: string };
+    expect(checkpoint.screenshotUrl).toContain(`/api/workspaces/${a.id}/artifacts/${a.runId}/`);
+    expect((await request(checkpoint.screenshotUrl)).status).toBe(200);
+    expect((await (await request(api(b.id, '/checkpoints'))).json()) as unknown[]).toHaveLength(0);
+    expect(
+      ((await (await request(api(a.id, '/events'))).json()) as unknown[]).length,
+    ).toBeGreaterThan(0);
+    expect(
+      ((await (await request(api(b.id, '/events'))).json()) as unknown[]).some(
+        (entry: any) => entry.tool === 'promote_asset',
+      ),
+    ).toBe(true);
+    const streamA = await request(api(a.id, '/stream'));
+    const streamReader = streamA.body!.getReader();
+    const firstStreamChunk = new TextDecoder().decode((await streamReader.read()).value);
+    await streamReader.cancel();
+    expect(firstStreamChunk).toContain(`"workspaceId":"${a.id}"`);
+
+    await new Promise<void>((resolve) => server!.close(() => resolve()));
+    server = undefined;
+    const restarted = await createApp({ ...options, runId: 'default-two' });
+    server = restarted.app.listen(0, '127.0.0.1');
+    await new Promise<void>((resolve) => server!.on('listening', resolve));
+    base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    const reopenedList = (await (await fetch(`${base}/api/workspaces`)).json()) as {
+      workspaces: Array<{ id: string; active: boolean; runId?: string }>;
+    };
+    expect(reopenedList.workspaces.find((workspace) => workspace.id === a.id)).toMatchObject({
+      active: false,
+    });
+    expect(
+      reopenedList.workspaces.find((workspace) => workspace.id === a.id)?.runId,
+    ).toBeUndefined();
+    const newHealth = (await (await fetch(`${base}${api(a.id, '/health')}`)).json()) as {
+      runId: string;
+    };
+    expect(newHealth.runId).not.toBe(a.runId);
+    const loaded = await fetch(`${base}${api(a.id, '/tools')}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tool: 'load_scene', arguments: { name: 'same' } }),
+    });
+    const loadedResponse = (await loaded.json()) as ToolResponse;
+    expect(loadedResponse.success).toBe(true);
+    expect((loadedResponse.result as Scene).objects[0]?.name).toBe('A only');
+    const promotedAfterRestart = await fetch(`${base}${api(b.id, '/tools')}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        tool: 'promote_asset',
+        arguments: {
+          sourceWorkspaceId: a.id,
+          sourceRunId: a.runId,
+          sourceExportExecutionId: exportResult.executionId,
+        },
+      }),
+    });
+    expect(((await promotedAfterRestart.json()) as ToolResponse).success).toBe(true);
+    expect(
+      ((await fetch(`${base}/api/state`).then((response) => response.json())) as Scene).objects,
+    ).toEqual([]);
+    expect((await fetch(`${base}${api(a.id, `/artifacts/${a.runId}/events.jsonl`)}`)).status).toBe(
+      200,
+    );
+    expect(
+      (await fetch(`${base}/api/workspaces/../../../../runs/default-one/events.jsonl`)).status,
+    ).not.toBe(200);
+
+    const failingService = await restarted.workspaces.get(b.id);
+    const eventPath = path.join(failingService.runDir, 'events.jsonl');
+    await rm(eventPath);
+    await mkdir(eventPath);
+    const failedPromotion = await fetch(`${base}${api(b.id, '/tools')}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        tool: 'promote_asset',
+        arguments: { sourceWorkspaceId: a.id, sourceAssetId: sourceAsset.id },
+      }),
+    });
+    expect(((await failedPromotion.json()) as ToolResponse).error?.code).toBe(
+      'HISTORY_WRITE_FAILED',
+    );
+    expect(await failingService.assets.search('Specialist tree', 'model', 20)).toEqual([
+      targetAsset,
+    ]);
+  });
+});

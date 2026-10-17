@@ -24,3 +24,5 @@ Start Codex, Claude Code, or OpenCode from the repository root and give it a tas
 4. Report changed behavior, verification, and any limitation. Keep generated scenes and test artifacts out of commits unless they are intentional fixtures.
 
 The local API remains the source of truth. MCP calls and browser edits use the same command endpoint, and the browser activity panel shows a tool call while it is running and after it completes.
+
+For concurrent specialist work, create one workspace per specialist through `POST /api/workspaces`. Give each client its workspace UUID: set `SCENE_WORKSPACE_ID` for MCP/CLI, or open `/?workspace=<uuid>` in the browser. Each workspace has an independent active scene and local catalog. To hand off a finished model, save the specialist scene, call `export_scene`, then call `promote_asset` from the target workspace with the source workspace ID, run ID, and export execution ID. The promoted GLB is copied under a new target catalog ID and can be placed with `search_assets` and `create_object`. Workspaces reopen with a new run after restart; named saves persist, while an unsaved active scene is not recovered.

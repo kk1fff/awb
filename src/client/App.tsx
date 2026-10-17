@@ -15,6 +15,7 @@ import { Viewport } from './Viewport.js';
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { RGBELoader } from 'three/addons/loaders/RGBELoader.js';
+import { workspaceApiBase, workspaceIdFromUrl } from './api.js';
 
 async function get<T>(url: string): Promise<T> {
   const response = await fetch(url);
@@ -32,6 +33,9 @@ const glyph: Record<SceneObject['type'], string> = {
 const pretty = (value: unknown) => JSON.stringify(value, null, 2);
 
 export function App() {
+  const workspaceId = workspaceIdFromUrl();
+  const apiBase = workspaceApiBase(workspaceId);
+  const [workspaces, setWorkspaces] = useState<Array<{ id: string; name: string }>>([]);
   const [scene, setScene] = useState<Scene>();
   const [events, setEvents] = useState<ToolEvent[]>([]);
   const [checkpoints, setCheckpoints] = useState<Checkpoint[]>([]);
@@ -62,11 +66,11 @@ export function App() {
   const mounted = useRef(true);
   const refresh = async () => {
     const [next, log, shots, notes, health] = await Promise.all([
-      get<Scene>('/api/state'),
-      get<ToolEvent[]>('/api/events'),
-      get<Checkpoint[]>('/api/checkpoints'),
-      get<Review[]>('/api/reviews'),
-      get<{ runId: string }>('/api/health'),
+      get<Scene>(`${apiBase}/state`),
+      get<ToolEvent[]>(`${apiBase}/events`),
+      get<Checkpoint[]>(`${apiBase}/checkpoints`),
+      get<Review[]>(`${apiBase}/reviews`),
+      get<{ runId: string }>(`${apiBase}/health`),
     ]);
     if (!mounted.current) return;
     setScene((previous) => (previous?.revision === next.revision ? previous : next));
@@ -77,7 +81,10 @@ export function App() {
   };
   useEffect(() => {
     mounted.current = true;
-    const stream = new EventSource('/api/stream');
+    void get<{ workspaces: Array<{ id: string; name: string }> }>('/api/workspaces')
+      .then((value) => setWorkspaces(value.workspaces))
+      .catch(() => undefined);
+    const stream = new EventSource(`${apiBase}/stream`);
     stream.addEventListener('snapshot', (event) => {
       const snapshot = JSON.parse((event as MessageEvent).data) as {
         runId: string;
@@ -119,7 +126,7 @@ export function App() {
       mounted.current = false;
       stream.close();
     };
-  }, []);
+  }, [apiBase]);
   useEffect(() => {
     if (scene) setCameraFovDraft(scene.camera.fov);
   }, [scene?.camera.fov]);
@@ -127,7 +134,7 @@ export function App() {
     setBusy(true);
     setError('');
     try {
-      const response = await fetch('/api/tools', {
+      const response = await fetch(`${apiBase}/tools`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ tool, arguments: args }),
@@ -179,6 +186,47 @@ export function App() {
         </a>
         <div className="project-title">
           <span className="status-dot" /> Live workspace <span className="divider">/</span>{' '}
+          <select
+            aria-label="Workspace"
+            value={workspaceId}
+            onChange={(event) => {
+              const next = new URL(location.href);
+              if (event.target.value === 'default') next.searchParams.delete('workspace');
+              else next.searchParams.set('workspace', event.target.value);
+              location.href = next.toString();
+            }}
+          >
+            {workspaces.map((workspace) => (
+              <option key={workspace.id} value={workspace.id}>
+                {workspace.name}
+              </option>
+            ))}
+          </select>
+          <button
+            type="button"
+            onClick={async () => {
+              const name = window.prompt('Name for the new isolated workspace');
+              if (!name?.trim()) return;
+              const response = await fetch('/api/workspaces', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name }),
+              });
+              const value = (await response.json()) as {
+                workspace?: { id: string };
+                error?: { message?: string };
+              };
+              if (!response.ok || !value.workspace) {
+                setError(value.error?.message ?? 'Workspace creation failed.');
+                return;
+              }
+              const next = new URL(location.href);
+              next.searchParams.set('workspace', value.workspace.id);
+              location.href = next.toString();
+            }}
+          >
+            ＋ Workspace
+          </button>
           <span title={runId}>{runId.slice(0, 35)}</span>
         </div>
         <div className="revision">
@@ -276,18 +324,31 @@ export function App() {
             className="add-object"
             onSubmit={async (event) => {
               event.preventDefault();
-              const response = await command('search_assets', { query: assetQuery, kind: assetKind });
+              const response = await command('search_assets', {
+                query: assetQuery,
+                kind: assetKind,
+              });
               setAssetResults((response?.result as AssetRecord[] | undefined) ?? []);
             }}
           >
             <label htmlFor="asset-query">SEARCH LOCAL ASSETS</label>
-            <input id="asset-query" value={assetQuery} onChange={(event) => setAssetQuery(event.target.value)} />
-            <select aria-label="Asset kind" value={assetKind} onChange={(event) => setAssetKind(event.target.value as typeof assetKind)}>
+            <input
+              id="asset-query"
+              value={assetQuery}
+              onChange={(event) => setAssetQuery(event.target.value)}
+            />
+            <select
+              aria-label="Asset kind"
+              value={assetKind}
+              onChange={(event) => setAssetKind(event.target.value as typeof assetKind)}
+            >
               <option value="model">Models</option>
               <option value="material">Materials</option>
               <option value="environment">Lighting</option>
             </select>
-            <button type="submit" disabled={busy}>Search</button>
+            <button type="submit" disabled={busy}>
+              Search
+            </button>
             {assetResults.map((asset) => (
               <button
                 type="button"
@@ -295,12 +356,24 @@ export function App() {
                 disabled={busy}
                 title={asset.description}
                 onClick={() => {
-                  if (asset.kind === 'model') void command('create_object', { name: asset.name, type: 'asset', assetId: asset.id });
-                  else if (asset.kind === 'environment') void command('set_lighting', { environmentAssetId: asset.id });
-                  else void command('create_object', { name: asset.name, type: 'box', materialId: asset.id });
+                  if (asset.kind === 'model')
+                    void command('create_object', {
+                      name: asset.name,
+                      type: 'asset',
+                      assetId: asset.id,
+                    });
+                  else if (asset.kind === 'environment')
+                    void command('set_lighting', { environmentAssetId: asset.id });
+                  else
+                    void command('create_object', {
+                      name: asset.name,
+                      type: 'box',
+                      materialId: asset.id,
+                    });
                 }}
               >
-                {asset.kind === 'model' ? '＋ ' : asset.kind === 'environment' ? '☼ ' : '▧ '}{asset.name}
+                {asset.kind === 'model' ? '＋ ' : asset.kind === 'environment' ? '☼ ' : '▧ '}
+                {asset.name}
               </button>
             ))}
           </form>
@@ -313,19 +386,35 @@ export function App() {
               setAssetImportBusy(true);
               setError('');
               try {
-                const response = await fetch('/api/assets/import', {
+                const response = await fetch(`${apiBase}/assets/import`, {
                   method: 'POST',
                   headers: {
                     'Content-Type': 'application/octet-stream',
                     'X-Asset-Name': encodeURIComponent(assetName),
                     'X-Asset-File-Name': encodeURIComponent(assetFile.name),
-                    'X-Asset-Tags': encodeURIComponent(JSON.stringify(assetTags.split(',').map((tag) => tag.trim()).filter(Boolean))),
+                    'X-Asset-Tags': encodeURIComponent(
+                      JSON.stringify(
+                        assetTags
+                          .split(',')
+                          .map((tag) => tag.trim())
+                          .filter(Boolean),
+                      ),
+                    ),
                   },
                   body: assetFile,
                 });
-                const value = await response.json() as { asset?: AssetRecord; error?: { message?: string } };
-                if (!response.ok || !value.asset) throw new Error(value.error?.message ?? `Asset import failed (${response.status}).`);
-                setAssetResults((current) => [value.asset!, ...current.filter((item) => item.id !== value.asset!.id)]);
+                const value = (await response.json()) as {
+                  asset?: AssetRecord;
+                  error?: { message?: string };
+                };
+                if (!response.ok || !value.asset)
+                  throw new Error(
+                    value.error?.message ?? `Asset import failed (${response.status}).`,
+                  );
+                setAssetResults((current) => [
+                  value.asset!,
+                  ...current.filter((item) => item.id !== value.asset!.id),
+                ]);
                 setAssetKind(value.asset.kind);
                 setAssetQuery(value.asset.name);
                 setAssetFile(undefined);
@@ -352,20 +441,48 @@ export function App() {
                 setAssetName(file?.name.replace(/\.[^.]+$/, '') ?? '');
               }}
             />
-            {assetFile && <>
-              <input aria-label="Asset name" value={assetName} onChange={(event) => setAssetName(event.target.value)} placeholder="Asset name" />
-              <input aria-label="Asset tags" value={assetTags} onChange={(event) => setAssetTags(event.target.value)} placeholder="Tags, comma separated" />
-              <AssetPreview
-                key={`${assetFile.name}-${assetFile.size}-${assetFile.lastModified}`}
-                file={assetFile}
-                onReady={(ready, message = '') => { setAssetPreviewReady(ready); setAssetPreviewError(message); }}
-              />
-              {assetPreviewError && <p className="asset-preview-error" role="alert">{assetPreviewError}</p>}
-              <button type="submit" disabled={!assetPreviewReady || assetImportBusy || !assetName.trim()}>
-                {assetImportBusy ? 'Importing…' : assetPreviewReady ? 'Add to local catalog' : 'Preview before import'}
-              </button>
-              <small className="asset-import-note">Local files only · GLB, HDR, PNG/JPEG/WebP · 100 MiB max</small>
-            </>}
+            {assetFile && (
+              <>
+                <input
+                  aria-label="Asset name"
+                  value={assetName}
+                  onChange={(event) => setAssetName(event.target.value)}
+                  placeholder="Asset name"
+                />
+                <input
+                  aria-label="Asset tags"
+                  value={assetTags}
+                  onChange={(event) => setAssetTags(event.target.value)}
+                  placeholder="Tags, comma separated"
+                />
+                <AssetPreview
+                  key={`${assetFile.name}-${assetFile.size}-${assetFile.lastModified}`}
+                  file={assetFile}
+                  onReady={(ready, message = '') => {
+                    setAssetPreviewReady(ready);
+                    setAssetPreviewError(message);
+                  }}
+                />
+                {assetPreviewError && (
+                  <p className="asset-preview-error" role="alert">
+                    {assetPreviewError}
+                  </p>
+                )}
+                <button
+                  type="submit"
+                  disabled={!assetPreviewReady || assetImportBusy || !assetName.trim()}
+                >
+                  {assetImportBusy
+                    ? 'Importing…'
+                    : assetPreviewReady
+                      ? 'Add to local catalog'
+                      : 'Preview before import'}
+                </button>
+                <small className="asset-import-note">
+                  Local files only · GLB, HDR, PNG/JPEG/WebP · 100 MiB max
+                </small>
+              </>
+            )}
           </form>
           <div className="properties">
             <h3>OBJECT PROPERTIES</h3>
@@ -433,6 +550,7 @@ export function App() {
             {scene && (
               <Viewport
                 scene={scene}
+                workspaceId={workspaceId}
                 onSelect={setSelected}
                 onCamera={(value) => {
                   camera.current = value;
@@ -738,7 +856,7 @@ export function App() {
             Load
           </button>
         </form>
-        <a href="/api/tools" target="_blank" rel="noreferrer">
+        <a href={`${apiBase}/tools`} target="_blank" rel="noreferrer">
           Tool reference ↗
         </a>
       </footer>
@@ -768,8 +886,32 @@ function ObjectEditor({
     <form
       onSubmit={(event) => {
         event.preventDefault();
-        const { id, name, position, rotation, scale, dimensions, color, visible, roughness, metalness, materialId } = draft;
-        void onSave({ id, name, position, rotation, scale, dimensions, color, visible, roughness, metalness, materialId });
+        const {
+          id,
+          name,
+          position,
+          rotation,
+          scale,
+          dimensions,
+          color,
+          visible,
+          roughness,
+          metalness,
+          materialId,
+        } = draft;
+        void onSave({
+          id,
+          name,
+          position,
+          rotation,
+          scale,
+          dimensions,
+          color,
+          visible,
+          roughness,
+          metalness,
+          materialId,
+        });
       }}
     >
       <label>
@@ -839,7 +981,12 @@ function ObjectEditor({
             aria-label="Roughness"
             placeholder="asset default"
             value={draft.roughness ?? ''}
-            onChange={(e) => setDraft({ ...draft, roughness: e.target.value === '' ? undefined : e.target.valueAsNumber })}
+            onChange={(e) =>
+              setDraft({
+                ...draft,
+                roughness: e.target.value === '' ? undefined : e.target.valueAsNumber,
+              })
+            }
           />
         </label>
         <label>
@@ -852,7 +999,12 @@ function ObjectEditor({
             aria-label="Metalness"
             placeholder="asset default"
             value={draft.metalness ?? ''}
-            onChange={(e) => setDraft({ ...draft, metalness: e.target.value === '' ? undefined : e.target.valueAsNumber })}
+            onChange={(e) =>
+              setDraft({
+                ...draft,
+                metalness: e.target.value === '' ? undefined : e.target.valueAsNumber,
+              })
+            }
           />
         </label>
       </div>
@@ -871,7 +1023,13 @@ function ObjectEditor({
   );
 }
 
-function AssetPreview({ file, onReady }: { file: File; onReady: (ready: boolean, message?: string) => void }) {
+function AssetPreview({
+  file,
+  onReady,
+}: {
+  file: File;
+  onReady: (ready: boolean, message?: string) => void;
+}) {
   const host = useRef<HTMLDivElement>(null);
   const callback = useRef(onReady);
   callback.current = onReady;
@@ -883,10 +1041,20 @@ function AssetPreview({ file, onReady }: { file: File; onReady: (ready: boolean,
     const url = URL.createObjectURL(file);
     if (isImage) {
       const image = new Image();
-      image.onload = () => { if (!disposed) { setImageUrl(url); callback.current(true); } };
-      image.onerror = () => { if (!disposed) callback.current(false, 'The image could not be previewed.'); };
+      image.onload = () => {
+        if (!disposed) {
+          setImageUrl(url);
+          callback.current(true);
+        }
+      };
+      image.onerror = () => {
+        if (!disposed) callback.current(false, 'The image could not be previewed.');
+      };
       image.src = url;
-      return () => { disposed = true; URL.revokeObjectURL(url); };
+      return () => {
+        disposed = true;
+        URL.revokeObjectURL(url);
+      };
     }
     const element = host.current;
     if (!element) return () => URL.revokeObjectURL(url);
@@ -907,30 +1075,52 @@ function AssetPreview({ file, onReady }: { file: File; onReady: (ready: boolean,
       light.position.set(4, 7, 5);
       scene.add(light);
       const camera = new THREE.PerspectiveCamera(38, 260 / 150, 0.05, 10000);
-      const render = () => { if (!disposed && scene && renderer) { renderer.render(scene, camera); callback.current(true); } };
+      const render = () => {
+        if (!disposed && scene && renderer) {
+          renderer.render(scene, camera);
+          callback.current(true);
+        }
+      };
       if (extension === 'hdr') {
-        new RGBELoader().load(url, (texture) => {
-          if (disposed || !scene) { texture.dispose(); return; }
-          previewEnvironment = texture;
-          texture.mapping = THREE.EquirectangularReflectionMapping;
-          scene.background = texture;
-          camera.position.set(0, 0, 3.5);
-          render();
-        }, undefined, (error) => { if (!disposed) callback.current(false, `HDR preview failed: ${String(error)}`); });
+        new RGBELoader().load(
+          url,
+          (texture) => {
+            if (disposed || !scene) {
+              texture.dispose();
+              return;
+            }
+            previewEnvironment = texture;
+            texture.mapping = THREE.EquirectangularReflectionMapping;
+            scene.background = texture;
+            camera.position.set(0, 0, 3.5);
+            render();
+          },
+          undefined,
+          (error) => {
+            if (!disposed) callback.current(false, `HDR preview failed: ${String(error)}`);
+          },
+        );
       } else {
-        new GLTFLoader().load(url, (gltf) => {
-          if (disposed || !scene) return;
-          const model = gltf.scene;
-          scene.add(model);
-          const bounds = new THREE.Box3().setFromObject(model);
-          const size = bounds.getSize(new THREE.Vector3());
-          const center = bounds.getCenter(new THREE.Vector3());
-          model.position.sub(center);
-          const largest = Math.max(size.x, size.y, size.z);
-          camera.position.set(largest * 1.8, largest * 1.25, largest * 2.8);
-          camera.lookAt(0, 0, 0);
-          render();
-        }, undefined, (error) => { if (!disposed) callback.current(false, `GLB preview failed: ${String(error)}`); });
+        new GLTFLoader().load(
+          url,
+          (gltf) => {
+            if (disposed || !scene) return;
+            const model = gltf.scene;
+            scene.add(model);
+            const bounds = new THREE.Box3().setFromObject(model);
+            const size = bounds.getSize(new THREE.Vector3());
+            const center = bounds.getCenter(new THREE.Vector3());
+            model.position.sub(center);
+            const largest = Math.max(size.x, size.y, size.z);
+            camera.position.set(largest * 1.8, largest * 1.25, largest * 2.8);
+            camera.lookAt(0, 0, 0);
+            render();
+          },
+          undefined,
+          (error) => {
+            if (!disposed) callback.current(false, `GLB preview failed: ${String(error)}`);
+          },
+        );
       }
     } catch (error) {
       callback.current(false, `Preview could not start: ${String(error)}`);
@@ -941,7 +1131,8 @@ function AssetPreview({ file, onReady }: { file: File; onReady: (ready: boolean,
         scene.traverse((item) => {
           if (item instanceof THREE.Mesh) {
             item.geometry.dispose();
-            for (const material of Array.isArray(item.material) ? item.material : [item.material]) material.dispose();
+            for (const material of Array.isArray(item.material) ? item.material : [item.material])
+              material.dispose();
           }
         });
       }
@@ -951,7 +1142,15 @@ function AssetPreview({ file, onReady }: { file: File; onReady: (ready: boolean,
       URL.revokeObjectURL(url);
     };
   }, [file, extension, isImage]);
-  return isImage
-    ? <div className="asset-preview"><img src={imageUrl || undefined} alt={`Preview of ${file.name}`} /></div>
-    : <div ref={host} className="asset-preview asset-preview-canvas" aria-label={`3D preview of ${file.name}`} />;
+  return isImage ? (
+    <div className="asset-preview">
+      <img src={imageUrl || undefined} alt={`Preview of ${file.name}`} />
+    </div>
+  ) : (
+    <div
+      ref={host}
+      className="asset-preview asset-preview-canvas"
+      aria-label={`3D preview of ${file.name}`}
+    />
+  );
 }

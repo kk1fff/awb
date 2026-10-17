@@ -2,8 +2,8 @@ import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
 import type { Scene } from '../shared/schema.js';
 import { buildWorld, disposeWorld } from './world.js';
 
-export async function exportBrowserScene(scene: Scene): Promise<string> {
-  const world = await buildWorld(scene);
+export async function exportBrowserScene(scene: Scene, workspaceId?: string): Promise<string> {
+  const world = await buildWorld(scene, workspaceId);
   for (const child of [...world.children]) if (child.type.includes('Light')) world.remove(child);
   world.background = null;
   world.environment = null;

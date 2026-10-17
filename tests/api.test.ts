@@ -73,7 +73,7 @@ afterEach(async () => {
 describe('public tool API', () => {
   it('discovers every tool and exercises create, inspect, list, patch and delete', async () => {
     const docs = await get<{ tools: Record<string, unknown> }>('/api/tools');
-    expect(Object.keys(docs.tools)).toHaveLength(13);
+    expect(Object.keys(docs.tools)).toHaveLength(14);
     const created = await call('create_object', {
       name: 'Tree',
       type: 'cylinder',
@@ -141,13 +141,21 @@ describe('public tool API', () => {
       color: '#ffffff',
     });
     const material = await call('create_object', {
-      name: 'Siding test', type: 'box', materialId: 'builtin:cedar-siding',
+      name: 'Siding test',
+      type: 'box',
+      materialId: 'builtin:cedar-siding',
     });
     expect(material.success).toBe(true);
-    expect((await call('set_lighting', { environmentAssetId: 'builtin:pnw-overcast' })).success).toBe(true);
+    expect(
+      (await call('set_lighting', { environmentAssetId: 'builtin:pnw-overcast' })).success,
+    ).toBe(true);
     const cleared = await call('set_lighting', { environmentAssetId: null });
     expect((cleared.result as Scene['lighting']).environmentAssetId).toBeUndefined();
-    const missing = await call('create_object', { name: 'Missing', type: 'asset', assetId: 'local:not-here' });
+    const missing = await call('create_object', {
+      name: 'Missing',
+      type: 'asset',
+      assetId: 'local:not-here',
+    });
     expect(missing.success).toBe(false);
     expect(missing.error?.code).toBe('ASSET_NOT_FOUND');
     expect(missing.sceneRevision).toBe(4);
@@ -160,65 +168,162 @@ describe('public tool API', () => {
     await writeFile(path.join(assets, 'models', 'test.glb'), 'not-a-glb');
     await writeFile(path.join(assets, 'textures', 'cedar.png'), 'texture');
     await writeFile(path.join(assets, 'lighting', 'overcast.hdr'), 'environment');
-    await writeFile(path.join(assets, 'catalog.json'), JSON.stringify({ assets: [
-      { id: 'local:cedar-house', name: 'Cedar house', description: 'User supplied model', kind: 'model',
-        tags: ['pnw', 'home'], source: 'local', format: 'glb', file: 'models/test.glb', bounds: [4, 3, 5] },
-      { id: 'local:cedar-surface', name: 'Cedar surface', description: 'User supplied texture', kind: 'material',
-        tags: ['wood', 'pnw'], source: 'local', format: 'png', file: 'textures/cedar.png', baseColor: '#aa7755', roughness: 0.8, metalness: 0 },
-      { id: 'local:overcast', name: 'Overcast', description: 'User supplied environment', kind: 'environment',
-        tags: ['pnw', 'sky'], source: 'local', format: 'hdr', file: 'lighting/overcast.hdr' },
-    ] }));
+    await writeFile(
+      path.join(assets, 'catalog.json'),
+      JSON.stringify({
+        assets: [
+          {
+            id: 'local:cedar-house',
+            name: 'Cedar house',
+            description: 'User supplied model',
+            kind: 'model',
+            tags: ['pnw', 'home'],
+            source: 'local',
+            format: 'glb',
+            file: 'models/test.glb',
+            bounds: [4, 3, 5],
+          },
+          {
+            id: 'local:cedar-surface',
+            name: 'Cedar surface',
+            description: 'User supplied texture',
+            kind: 'material',
+            tags: ['wood', 'pnw'],
+            source: 'local',
+            format: 'png',
+            file: 'textures/cedar.png',
+            baseColor: '#aa7755',
+            roughness: 0.8,
+            metalness: 0,
+          },
+          {
+            id: 'local:overcast',
+            name: 'Overcast',
+            description: 'User supplied environment',
+            kind: 'environment',
+            tags: ['pnw', 'sky'],
+            source: 'local',
+            format: 'hdr',
+            file: 'lighting/overcast.hdr',
+          },
+        ],
+      }),
+    );
     const search = await call('search_assets', { query: 'cedar pnw', kind: 'model' });
-    expect(search.result).toEqual(expect.arrayContaining([expect.objectContaining({ id: 'local:cedar-house' })]));
-    const created = await call('create_object', { name: 'User house', type: 'asset', assetId: 'local:cedar-house' });
+    expect(search.result).toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: 'local:cedar-house' })]),
+    );
+    const created = await call('create_object', {
+      name: 'User house',
+      type: 'asset',
+      assetId: 'local:cedar-house',
+    });
     expect(created.success).toBe(true);
     const file = await fetch(`${base}/api/assets/local%3Acedar-house/file`);
     expect(file.status).toBe(200);
     expect(await file.text()).toBe('not-a-glb');
-    const material = await call('create_object', { name: 'Local texture', type: 'box', materialId: 'local:cedar-surface' });
+    const material = await call('create_object', {
+      name: 'Local texture',
+      type: 'box',
+      materialId: 'local:cedar-surface',
+    });
     expect(material.success).toBe(true);
-    expect((await fetch(`${base}/api/assets/local%3Acedar-surface/file`)).headers.get('content-type')).toContain('image/png');
-    expect((await call('set_lighting', { environmentAssetId: 'local:overcast' })).success).toBe(true);
-    await writeFile(path.join(assets, 'catalog.json'), JSON.stringify({ assets: [{
-      id: 'local:escape', name: 'Escape', description: '', kind: 'model', tags: [], source: 'local',
-      format: 'glb', file: '../secret.glb', bounds: [1, 1, 1],
-    }] }));
+    expect(
+      (await fetch(`${base}/api/assets/local%3Acedar-surface/file`)).headers.get('content-type'),
+    ).toContain('image/png');
+    expect((await call('set_lighting', { environmentAssetId: 'local:overcast' })).success).toBe(
+      true,
+    );
+    await writeFile(
+      path.join(assets, 'catalog.json'),
+      JSON.stringify({
+        assets: [
+          {
+            id: 'local:escape',
+            name: 'Escape',
+            description: '',
+            kind: 'model',
+            tags: [],
+            source: 'local',
+            format: 'glb',
+            file: '../secret.glb',
+            bounds: [1, 1, 1],
+          },
+        ],
+      }),
+    );
     const invalid = await call('search_assets', {});
     expect(invalid.success).toBe(false);
     expect(invalid.error?.code).toBe('INVALID_ASSET_CATALOG');
   });
   it('imports local GLB, HDR and image assets for public-tool use without mutating the scene', async () => {
     const startingRevision = (await get<Scene>('/api/state')).revision;
-    const houseResponse = await uploadAsset('cedar-house.glb', 'Cedar PNW house', ['house', 'pnw'], tinyGlb());
+    const houseResponse = await uploadAsset(
+      'cedar-house.glb',
+      'Cedar PNW house',
+      ['house', 'pnw'],
+      tinyGlb(),
+    );
     expect(houseResponse.status).toBe(201);
-    const house = (await houseResponse.json() as { asset: { id: string; bounds: number[]; file: string; originalFileName: string } }).asset;
-    expect(house).toMatchObject({ name: 'Cedar PNW house', bounds: [2, 2, 2], file: expect.stringMatching(/^models\//), originalFileName: 'cedar-house.glb' });
+    const house = (
+      (await houseResponse.json()) as {
+        asset: { id: string; bounds: number[]; file: string; originalFileName: string };
+      }
+    ).asset;
+    expect(house).toMatchObject({
+      name: 'Cedar PNW house',
+      bounds: [2, 2, 2],
+      file: expect.stringMatching(/^models\//),
+      originalFileName: 'cedar-house.glb',
+    });
     const search = await call('search_assets', { query: 'pnw house', kind: 'model' });
-    expect(search.result).toEqual(expect.arrayContaining([expect.objectContaining({ id: house.id })]));
-    const placed = await call('create_object', { name: 'Imported home', type: 'asset', assetId: house.id });
+    expect(search.result).toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: house.id })]),
+    );
+    const placed = await call('create_object', {
+      name: 'Imported home',
+      type: 'asset',
+      assetId: house.id,
+    });
     expect(placed.success).toBe(true);
     expect((placed.result as SceneObject).dimensions).toEqual([2, 2, 2]);
 
-    const hdrResponse = await uploadAsset('overcast.hdr', 'Local overcast sky', ['pnw', 'sky'], tinyHdr());
+    const hdrResponse = await uploadAsset(
+      'overcast.hdr',
+      'Local overcast sky',
+      ['pnw', 'sky'],
+      tinyHdr(),
+    );
     expect(hdrResponse.status).toBe(201);
-    const hdr = (await hdrResponse.json() as { asset: { id: string; kind: string } }).asset;
+    const hdr = ((await hdrResponse.json()) as { asset: { id: string; kind: string } }).asset;
     expect(hdr.kind).toBe('environment');
     expect((await call('set_lighting', { environmentAssetId: hdr.id })).success).toBe(true);
 
     const textureResponse = await uploadAsset('cedar.png', 'Cedar color map', ['wood'], tinyPng());
     expect(textureResponse.status).toBe(201);
-    const texture = (await textureResponse.json() as { asset: { id: string; kind: string } }).asset;
+    const texture = ((await textureResponse.json()) as { asset: { id: string; kind: string } })
+      .asset;
     expect(texture.kind).toBe('material');
-    expect((await call('create_object', { name: 'Textured cedar', type: 'box', materialId: texture.id })).success).toBe(true);
+    expect(
+      (await call('create_object', { name: 'Textured cedar', type: 'box', materialId: texture.id }))
+        .success,
+    ).toBe(true);
     expect((await get<Scene>('/api/state')).revision).toBe(startingRevision + 3);
 
     const invalid = await uploadAsset('fake.png', 'Fake image', [], Buffer.from('not an image'));
     expect(invalid.status).toBe(400);
     expect(await invalid.json()).toMatchObject({ error: { code: 'INVALID_ASSET_FILE' } });
-    const truncated = await uploadAsset('truncated.png', 'Truncated image', [], tinyPng().subarray(0, 30));
+    const truncated = await uploadAsset(
+      'truncated.png',
+      'Truncated image',
+      [],
+      tinyPng().subarray(0, 30),
+    );
     expect(truncated.status).toBe(400);
     expect(await truncated.json()).toMatchObject({ error: { code: 'INVALID_ASSET_FILE' } });
-    const catalog = JSON.parse(await readFile(path.join(root, 'data', 'assets', 'catalog.json'), 'utf8')) as { assets: { id: string }[] };
+    const catalog = JSON.parse(
+      await readFile(path.join(root, 'data', 'assets', 'catalog.json'), 'utf8'),
+    ) as { assets: { id: string }[] };
     expect(catalog.assets.map((asset) => asset.id)).toEqual([house.id, hdr.id, texture.id]);
   });
   it('exports only visible scene meshes as a revision-linked GLB artifact', async () => {
@@ -319,14 +424,21 @@ describe('public tool API', () => {
     expect(changed.success).toBe(true);
     const changedScene = await get<Scene>('/api/state');
     expect(changedScene.lighting).toMatchObject({
-      backgroundMode: 'environment', backgroundColor: '#123456',
-      directional: { shadowSoftness: 3, color: initial.lighting.directional.color,
-        intensity: initial.lighting.directional.intensity, position: initial.lighting.directional.position },
+      backgroundMode: 'environment',
+      backgroundColor: '#123456',
+      directional: {
+        shadowSoftness: 3,
+        color: initial.lighting.directional.color,
+        intensity: initial.lighting.directional.intensity,
+        position: initial.lighting.directional.position,
+      },
     });
     const partial = await call('set_lighting', { ambient: { intensity: 0.7 } });
     expect(partial.success).toBe(true);
     expect((await get<Scene>('/api/state')).lighting).toMatchObject({
-      backgroundMode: 'environment', backgroundColor: '#123456', directional: { shadowSoftness: 3 },
+      backgroundMode: 'environment',
+      backgroundColor: '#123456',
+      directional: { shadowSoftness: 3 },
     });
 
     for (const args of [
@@ -341,9 +453,14 @@ describe('public tool API', () => {
     }
     const saved = await call('save_scene', { name: 'lighting-controls' });
     const fresh = await createApp({ ...service.options, runId: 'lighting-controls-fresh' });
-    const loaded = await fresh.service.execute({ tool: 'load_scene', arguments: { name: 'lighting-controls' } });
+    const loaded = await fresh.service.execute({
+      tool: 'load_scene',
+      arguments: { name: 'lighting-controls' },
+    });
     expect(loaded.success).toBe(true);
-    expect(fresh.service.engine.snapshot().lighting).toEqual((await get<Scene>('/api/state')).lighting);
+    expect(fresh.service.engine.snapshot().lighting).toEqual(
+      (await get<Scene>('/api/state')).lighting,
+    );
 
     expect((await call('set_lighting', { backgroundColor: null })).success).toBe(true);
     expect((await get<Scene>('/api/state')).lighting.backgroundColor).toBeUndefined();

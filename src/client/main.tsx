@@ -4,6 +4,7 @@ import type { Scene } from '../shared/schema.js';
 import { Viewport } from './Viewport.js';
 import { App } from './App.js';
 import { exportBrowserScene } from './scene-export.js';
+import { workspaceApiBase, workspaceIdFromUrl } from './api.js';
 import '@fontsource/dm-sans/400.css';
 import '@fontsource/dm-sans/500.css';
 import '@fontsource/dm-sans/600.css';
@@ -12,11 +13,11 @@ import '@fontsource/manrope/600.css';
 import '@fontsource/manrope/700.css';
 import './style.css';
 
-function CheckpointView({ id }: { id: string }) {
+function CheckpointView({ id, workspaceId }: { id: string; workspaceId: string }) {
   const [scene, setScene] = useState<Scene>();
   const [error, setError] = useState('');
   useEffect(() => {
-    fetch(`/api/checkpoints/${encodeURIComponent(id)}/scene`)
+    fetch(`${workspaceApiBase(workspaceId)}/checkpoints/${encodeURIComponent(id)}/scene`)
       .then(async (response) => {
         if (!response.ok) throw new Error(`Checkpoint load failed (${response.status})`);
         setScene((await response.json()) as Scene);
@@ -31,7 +32,7 @@ function CheckpointView({ id }: { id: string }) {
       {error ? (
         <p role="alert">{error}</p>
       ) : scene ? (
-        <Viewport scene={scene} captureMode />
+        <Viewport scene={scene} workspaceId={workspaceId} captureMode />
       ) : (
         <p>Loading checkpoint…</p>
       )}
@@ -39,7 +40,8 @@ function CheckpointView({ id }: { id: string }) {
   );
 }
 const checkpoint = new URLSearchParams(location.search).get('checkpoint');
-window.__fieldworkExport = exportBrowserScene;
+const workspaceId = workspaceIdFromUrl();
+window.__fieldworkExport = (scene) => exportBrowserScene(scene, workspaceId);
 createRoot(document.getElementById('root')!).render(
-  checkpoint ? <CheckpointView id={checkpoint} /> : <App />,
+  checkpoint ? <CheckpointView id={checkpoint} workspaceId={workspaceId} /> : <App />,
 );

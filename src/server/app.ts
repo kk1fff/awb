@@ -1,64 +1,83 @@
-import express, { type ErrorRequestHandler } from 'express';
+import express, { type ErrorRequestHandler, type Router } from 'express';
 import path from 'node:path';
 import { z } from 'zod';
 import { toolSchemas } from '../shared/schema.js';
 import { ToolService, type ServiceOptions } from './service.js';
+import { WorkspaceManager } from './workspaces.js';
 import { ToolError } from '../engine/scene.js';
 
-export async function createApp(options: ServiceOptions & { clientDir?: string }) {
-  const service = new ToolService(options);
-  await service.init();
-  const app = express();
-  app.disable('x-powered-by');
-  app.use(express.json({ limit: '1mb' }));
-  app.post('/api/assets/import', express.raw({ type: 'application/octet-stream', limit: '100mb' }), async (req, res, next) => {
-    try {
-      const decode = (value: string | undefined, label: string) => {
-        if (!value) throw new ToolError('INVALID_ASSET_METADATA', `Missing ${label}.`);
-        try { return decodeURIComponent(value); }
-        catch { throw new ToolError('INVALID_ASSET_METADATA', `Invalid ${label} encoding.`); }
-      };
-      const tagsValue = decode(req.header('x-asset-tags'), 'asset tags');
-      let tags: unknown;
-      try { tags = JSON.parse(tagsValue); }
-      catch { throw new ToolError('INVALID_ASSET_METADATA', 'Asset tags must be a JSON array.'); }
-      if (!Array.isArray(tags) || tags.some((tag) => typeof tag !== 'string'))
-        throw new ToolError('INVALID_ASSET_METADATA', 'Asset tags must be a JSON array of strings.');
-      if (!Buffer.isBuffer(req.body)) throw new ToolError('INVALID_ASSET_FILE', 'Upload a file as application/octet-stream.');
-      const asset = await service.assets.importLocalAsset({
-        name: decode(req.header('x-asset-name'), 'asset name'),
-        fileName: decode(req.header('x-asset-file-name'), 'file name'),
-        tags,
-        data: req.body,
-      });
-      res.status(201).json({ asset });
-    } catch (error) { next(error); }
-  });
-  app.get('/api/health', (_req, res) =>
-    res.json({ ready: true, runId: options.runId, toolVersion: '2' }),
+async function registerServiceRoutes(router: Router, service: ToolService, workspaceId: string) {
+  const scoped = workspaceId !== 'default';
+  router.post(
+    '/assets/import',
+    express.raw({ type: 'application/octet-stream', limit: '100mb' }),
+    async (req, res, next) => {
+      try {
+        const decode = (value: string | undefined, label: string) => {
+          if (!value) throw new ToolError('INVALID_ASSET_METADATA', `Missing ${label}.`);
+          try {
+            return decodeURIComponent(value);
+          } catch {
+            throw new ToolError('INVALID_ASSET_METADATA', `Invalid ${label} encoding.`);
+          }
+        };
+        const tagsValue = decode(req.header('x-asset-tags'), 'asset tags');
+        let tags: unknown;
+        try {
+          tags = JSON.parse(tagsValue);
+        } catch {
+          throw new ToolError('INVALID_ASSET_METADATA', 'Asset tags must be a JSON array.');
+        }
+        if (!Array.isArray(tags) || tags.some((tag) => typeof tag !== 'string'))
+          throw new ToolError(
+            'INVALID_ASSET_METADATA',
+            'Asset tags must be a JSON array of strings.',
+          );
+        if (!Buffer.isBuffer(req.body))
+          throw new ToolError('INVALID_ASSET_FILE', 'Upload a file as application/octet-stream.');
+        const asset = await service.assets.importLocalAsset({
+          name: decode(req.header('x-asset-name'), 'asset name'),
+          fileName: decode(req.header('x-asset-file-name'), 'file name'),
+          tags,
+          data: req.body,
+        });
+        res.status(201).json({ asset });
+      } catch (error) {
+        next(error);
+      }
+    },
   );
-  app.get('/api/state', (_req, res) => res.json(service.engine.snapshot()));
-  app.get('/api/assets/:id/file', async (req, res, next) => {
+  router.get('/health', (_req, res) =>
+    res.json({ ready: true, runId: service.options.runId, workspaceId, toolVersion: '2' }),
+  );
+  router.get('/state', (_req, res) => res.json(service.engine.snapshot()));
+  router.get('/assets/:id/file', async (req, res, next) => {
     try {
       const file = await service.assets.filePath(req.params.id);
       const extension = path.extname(file).toLowerCase();
-      const type = extension === '.glb' ? 'model/gltf-binary'
-        : extension === '.png' ? 'image/png'
-          : ['.jpg', '.jpeg'].includes(extension) ? 'image/jpeg'
-            : extension === '.webp' ? 'image/webp' : 'application/octet-stream';
+      const type =
+        extension === '.glb'
+          ? 'model/gltf-binary'
+          : extension === '.png'
+            ? 'image/png'
+            : ['.jpg', '.jpeg'].includes(extension)
+              ? 'image/jpeg'
+              : extension === '.webp'
+                ? 'image/webp'
+                : 'application/octet-stream';
       res.type(type).sendFile(file);
     } catch (error) {
       next(error);
     }
   });
-  app.get('/api/assets/:id', async (req, res, next) => {
+  router.get('/assets/:id', async (req, res, next) => {
     try {
       res.json(await service.assets.get(req.params.id));
     } catch (error) {
       next(error);
     }
   });
-  app.get('/api/tools', (_req, res) =>
+  router.get('/tools', (_req, res) =>
     res.json({
       toolVersion: '2',
       tools: Object.fromEntries(
@@ -66,10 +85,10 @@ export async function createApp(options: ServiceOptions & { clientDir?: string }
       ),
     }),
   );
-  app.get('/api/events', (_req, res) => res.json(service.events));
-  app.get('/api/reviews', (_req, res) => res.json(service.reviews));
-  app.get('/api/checkpoints', (_req, res) => res.json(service.checkpoints));
-  app.get('/api/stream', (req, res) => {
+  router.get('/events', (_req, res) => res.json(service.events));
+  router.get('/reviews', (_req, res) => res.json(service.reviews));
+  router.get('/checkpoints', (_req, res) => res.json(service.checkpoints));
+  router.get('/stream', (req, res) => {
     res.status(200).set({
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache, no-transform',
@@ -81,7 +100,8 @@ export async function createApp(options: ServiceOptions & { clientDir?: string }
       res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
     const unsubscribe = service.subscribe((message) => send(message.type, message));
     send('snapshot', {
-      runId: options.runId,
+      workspaceId,
+      runId: service.options.runId,
       scene: service.engine.snapshot(),
       events: service.events,
       checkpoints: service.checkpoints,
@@ -93,7 +113,7 @@ export async function createApp(options: ServiceOptions & { clientDir?: string }
       unsubscribe();
     });
   });
-  app.get('/api/checkpoints/:id/scene', (req, res) => {
+  router.get('/checkpoints/:id/scene', (req, res) => {
     const checkpoint = service.checkpoints.find((c) => c.id === req.params.id);
     if (!checkpoint) {
       res.status(404).json({ error: 'Checkpoint not found' });
@@ -101,24 +121,147 @@ export async function createApp(options: ServiceOptions & { clientDir?: string }
     }
     res.sendFile(path.join(service.runDir, 'checkpoints', checkpoint.id, 'scene.json'));
   });
-  app.post('/api/tools', async (req, res) => {
+  router.post('/tools', async (req, res) => {
     const result = await service.execute(req.body);
     res
       .status(result.success ? 200 : result.error?.code === 'VALIDATION_ERROR' ? 400 : 422)
       .json(result);
   });
+}
+
+export async function createApp(options: ServiceOptions & { clientDir?: string }) {
+  const manager = new WorkspaceManager(options);
+  await manager.init();
+  const service = manager.defaultService;
+  const app = express();
+  app.disable('x-powered-by');
+  app.use(express.json({ limit: '1mb' }));
+
+  app.get('/api/workspaces', async (_req, res, next) => {
+    try {
+      res.json({ workspaces: await manager.list() });
+    } catch (error) {
+      next(error);
+    }
+  });
+  app.get('/api/workspaces/:workspaceId', async (req, res, next) => {
+    try {
+      res.json({ workspace: await manager.describe(String(req.params.workspaceId)) });
+    } catch (error) {
+      next(error);
+    }
+  });
+  app.post('/api/workspaces', async (req, res, next) => {
+    try {
+      const schema = z
+        .object({ name: z.string().trim().min(1).max(100), owner: z.string().max(120).optional() })
+        .strict();
+      const input = schema.parse(req.body);
+      res.status(201).json({ workspace: await manager.create(input) });
+    } catch (error) {
+      next(error);
+    }
+  });
+  const defaultRouter = express.Router();
+  await registerServiceRoutes(defaultRouter, service, 'default');
+  app.use('/api', defaultRouter);
   app.use('/artifacts', express.static(service.runDir, { dotfiles: 'deny' }));
-  app.use('/api', (_req, res) => res.status(404).json({ error: 'Unknown API route' }));
+
+  const scopedRouter = express.Router({ mergeParams: true });
+  scopedRouter.use(async (req, res, next) => {
+    try {
+      const id = req.params.workspaceId;
+      if (!id || id === 'default') {
+        res.status(404).json({ error: 'Use /api/* for the default workspace.' });
+        return;
+      }
+      const target = await manager.get(String(id));
+      res.locals.workspaceService = target;
+      next();
+    } catch (error) {
+      next(error);
+    }
+  });
+  // Register all ordinary API endpoints against the selected service.
+  scopedRouter.use(async (req, res, next) => {
+    try {
+      const target = res.locals.workspaceService as ToolService;
+      const handler = express.Router();
+      await registerServiceRoutes(handler, target, target.options.workspaceId!);
+      handler(req, res, next);
+    } catch (error) {
+      next(error);
+    }
+  });
+  app.use('/api/workspaces/:workspaceId/artifacts/:runId', async (req, res, next) => {
+    try {
+      const dir = await manager.historicalRunDir(
+        String(req.params.workspaceId),
+        String(req.params.runId),
+      );
+      express.static(dir, { dotfiles: 'deny' })(req, res, next);
+    } catch (error) {
+      next(error);
+    }
+  });
+  app.use('/api/workspaces/:workspaceId', scopedRouter);
+
   if (options.clientDir) {
     app.use(express.static(options.clientDir));
     app.get('/', (_req, res) => res.sendFile(path.join(options.clientDir!, 'index.html')));
   }
   const errors: ErrorRequestHandler = async (err, req, res, _next) => {
-    if (req.path === '/api/assets/import') {
-      const tooLarge = (err as { type?: string; status?: number }).type === 'entity.too.large' || (err as { status?: number }).status === 413;
-      const code = tooLarge ? 'ASSET_TOO_LARGE' : err instanceof ToolError ? err.code : 'INVALID_ASSET_FILE';
-      const message = tooLarge ? 'Files must be 100 MiB or smaller.' : err instanceof Error ? err.message : String(err);
+    if (req.path.endsWith('/assets/import')) {
+      const tooLarge =
+        (err as { type?: string; status?: number }).type === 'entity.too.large' ||
+        (err as { status?: number }).status === 413;
+      const code = tooLarge
+        ? 'ASSET_TOO_LARGE'
+        : err instanceof ToolError
+          ? err.code
+          : err instanceof z.ZodError
+            ? 'VALIDATION_ERROR'
+            : 'INVALID_ASSET_FILE';
+      const message = tooLarge
+        ? 'Files must be 100 MiB or smaller.'
+        : err instanceof Error
+          ? err.message
+          : String(err);
       res.status(tooLarge ? 413 : 400).json({ error: { code, message } });
+      return;
+    }
+    const scopedPath = req.path.startsWith('/api/workspaces/');
+    if (scopedPath) {
+      const target = res.locals.workspaceService as ToolService | undefined;
+      if (target) {
+        const result = await target.execute(
+          { tool: 'invalid_request', arguments: { message: String(err) } },
+          new ToolError('INVALID_REQUEST', 'Request must be valid JSON and no larger than 1 MB.'),
+        );
+        res.status(400).json(result);
+        return;
+      }
+      if (err instanceof ToolError) {
+        res
+          .status(err.code.endsWith('_NOT_FOUND') ? 404 : 400)
+          .json({ error: { code: err.code, message: err.message } });
+        return;
+      }
+      if (err instanceof z.ZodError) {
+        res.status(400).json({ error: { code: 'VALIDATION_ERROR', details: err.issues } });
+        return;
+      }
+      res.status(400).json({ error: { code: 'INVALID_REQUEST', message: String(err) } });
+      return;
+    }
+    if (err instanceof ToolError) {
+      res
+        .status(err.code.endsWith('_NOT_FOUND') ? 404 : 400)
+        .json({ error: { code: err.code, message: err.message } });
+      return;
+    }
+    if (err instanceof z.ZodError) {
+      res.status(400).json({ error: { code: 'VALIDATION_ERROR', details: err.issues } });
       return;
     }
     const result = await service.execute(
@@ -128,5 +271,5 @@ export async function createApp(options: ServiceOptions & { clientDir?: string }
     res.status(400).json(result);
   };
   app.use(errors);
-  return { app, service };
+  return { app, service, workspaces: manager };
 }

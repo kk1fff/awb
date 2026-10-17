@@ -37,6 +37,43 @@ test('@smoke renders a public-API object in Linux Chromium with no browser error
   expect(errors).toEqual([]);
 });
 
+test('@smoke scopes the browser viewport and public tools to a selected workspace', async ({
+  page,
+  request,
+}) => {
+  const createdWorkspace = await request.post('/api/workspaces', {
+    data: { name: 'Browser specialist' },
+  });
+  expect(createdWorkspace.status()).toBe(201);
+  const { workspace } = (await createdWorkspace.json()) as {
+    workspace: { id: string; name: string };
+  };
+  const scoped = `/api/workspaces/${workspace.id}`;
+  const created = await request.post(`${scoped}/tools`, {
+    data: {
+      tool: 'create_object',
+      arguments: { name: 'Scoped red house', type: 'box', dimensions: [3, 2, 3], color: '#a54b39' },
+    },
+  });
+  const toolResult = (await created.json()) as ToolResponse;
+  expect(toolResult.success).toBe(true);
+  await page.goto(`/?workspace=${workspace.id}`);
+  await expect(page.getByRole('combobox', { name: 'Workspace' })).toHaveValue(workspace.id);
+  await expect
+    .poll(() => page.evaluate(() => window.__sceneReady?.objectIds))
+    .toContain((toolResult.result as SceneObject).id);
+  await expect(page.getByRole('button', { name: /Scoped red house/ })).toBeVisible();
+  await page.screenshot({ path: 'artifacts/tests/workspace-browser-smoke.png', fullPage: true });
+  const checkpoint = await request.post(`${scoped}/tools`, {
+    data: { tool: 'render_scene', arguments: { label: 'Scoped browser checkpoint' } },
+  });
+  const renderResponse = (await checkpoint.json()) as ToolResponse;
+  expect(renderResponse.success).toBe(true);
+  const imageUrl = (renderResponse.result as Checkpoint).screenshotUrl!;
+  expect(imageUrl).toContain(scoped);
+  expect((await request.get(imageUrl)).ok()).toBe(true);
+});
+
 test('public lighting controls produce a visible change in a fixed-scene render', async ({
   page,
   request,
@@ -64,9 +101,11 @@ test('public lighting controls produce a visible change in a fixed-scene render'
         position: [5, 8, 6],
       },
     });
-    const checkpoint = (await tool(request, 'render_scene', {
-      label: `Lighting ambient ${ambientIntensity} directional ${directionalIntensity}`,
-    })).result as Checkpoint;
+    const checkpoint = (
+      await tool(request, 'render_scene', {
+        label: `Lighting ambient ${ambientIntensity} directional ${directionalIntensity}`,
+      })
+    ).result as Checkpoint;
     const response = await request.get(checkpoint.screenshotUrl!);
     expect(response.ok()).toBe(true);
     const encoded = (await response.body()).toString('base64');
@@ -91,24 +130,49 @@ test('public lighting controls produce a visible change in a fixed-scene render'
   const ambientLit = await captureMean(8, 0);
   const directionalLit = await captureMean(0, 8);
   expect(ambientLit - unlit, `ambient response: ${unlit} -> ${ambientLit}`).toBeGreaterThan(8);
-  expect(directionalLit - unlit, `directional response: ${unlit} -> ${directionalLit}`).toBeGreaterThan(8);
+  expect(
+    directionalLit - unlit,
+    `directional response: ${unlit} -> ${directionalLit}`,
+  ).toBeGreaterThan(8);
 });
 
-test('environment background and PCF softness change the same scene render', async ({ page, request }) => {
+test('environment background and PCF softness change the same scene render', async ({
+  page,
+  request,
+}) => {
   await tool(request, 'create_object', {
-    name: 'A/B ground', type: 'box', position: [0, -0.15, 0], dimensions: [24, 0.3, 24], color: '#727b50',
+    name: 'A/B ground',
+    type: 'box',
+    position: [0, -0.15, 0],
+    dimensions: [24, 0.3, 24],
+    color: '#727b50',
   });
   await tool(request, 'create_object', {
-    name: 'A/B house mass', type: 'box', position: [0, 2, 0], dimensions: [6, 4, 5], color: '#a98768',
+    name: 'A/B house mass',
+    type: 'box',
+    position: [0, 2, 0],
+    dimensions: [6, 4, 5],
+    color: '#a98768',
   });
   await tool(request, 'create_object', {
-    name: 'A/B porch post', type: 'box', position: [3.3, 1.3, 2.3], dimensions: [0.25, 2.6, 0.25], color: '#654b36',
+    name: 'A/B porch post',
+    type: 'box',
+    position: [3.3, 1.3, 2.3],
+    dimensions: [0.25, 2.6, 0.25],
+    color: '#654b36',
   });
   await tool(request, 'create_object', {
-    name: 'A/B fir', type: 'cone', position: [6, 2.4, 1], dimensions: [2.4, 4.8, 2.4], color: '#34543a',
+    name: 'A/B fir',
+    type: 'cone',
+    position: [6, 2.4, 1],
+    dimensions: [2.4, 4.8, 2.4],
+    color: '#34543a',
   });
   await tool(request, 'set_camera', {
-    projection: 'perspective', fov: 38, position: [15, 9, 18], target: [0, 2, 0],
+    projection: 'perspective',
+    fov: 38,
+    position: [15, 9, 18],
+    target: [0, 2, 0],
   });
   const fixedLight = {
     ambient: { color: '#ffffff', intensity: 0.55 },
@@ -141,28 +205,41 @@ test('environment background and PCF softness change the same scene render', asy
     return { result, pixels: Array.from(pixels) };
   };
   const solid = await capture('lighting-ab-solid-hard', {
-    backgroundMode: 'solid', environmentAssetId: 'builtin:pnw-overcast',
+    backgroundMode: 'solid',
+    environmentAssetId: 'builtin:pnw-overcast',
   });
-  const visibleEnvironment = await capture('lighting-ab-environment-hard', { backgroundMode: 'environment' });
-  const soft = await capture('lighting-ab-environment-soft', { directional: { shadowSoftness: 4 } });
+  const visibleEnvironment = await capture('lighting-ab-environment-hard', {
+    backgroundMode: 'environment',
+  });
+  const soft = await capture('lighting-ab-environment-soft', {
+    directional: { shadowSoftness: 4 },
+  });
   expect(solid.result.sceneRevision).toBeLessThan(visibleEnvironment.result.sceneRevision);
 
   const difference = (a: number[], b: number[], x0: number, y0: number, x1: number, y1: number) => {
     let changed = 0;
     let total = 0;
     const width = 1024;
-    for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) {
-      const i = (y * width + x) * 4;
-      const delta = Math.abs(a[i]! - b[i]!) + Math.abs(a[i + 1]! - b[i + 1]!) + Math.abs(a[i + 2]! - b[i + 2]!);
-      if (delta > 12) changed++;
-      total++;
-    }
+    for (let y = y0; y < y1; y++)
+      for (let x = x0; x < x1; x++) {
+        const i = (y * width + x) * 4;
+        const delta =
+          Math.abs(a[i]! - b[i]!) +
+          Math.abs(a[i + 1]! - b[i + 1]!) +
+          Math.abs(a[i + 2]! - b[i + 2]!);
+        if (delta > 12) changed++;
+        total++;
+      }
     return changed / total;
   };
   // Sky-only pixels demonstrate that environment selection is visible, not just IBL.
-  expect(difference(solid.pixels, visibleEnvironment.pixels, 200, 20, 824, 130)).toBeGreaterThan(0.2);
+  expect(difference(solid.pixels, visibleEnvironment.pixels, 200, 20, 824, 130)).toBeGreaterThan(
+    0.2,
+  );
   // Lower scene region includes the fir's east-side cast shadow and porch/foundation contact shadows.
-  expect(difference(visibleEnvironment.pixels, soft.pixels, 120, 300, 904, 740)).toBeGreaterThan(0.003);
+  expect(difference(visibleEnvironment.pixels, soft.pixels, 120, 300, 904, 740)).toBeGreaterThan(
+    0.003,
+  );
 });
 
 test('live browser observes an agent edit and downloads a GLB export', async ({
@@ -291,8 +368,12 @@ test('orthographic and perspective cameras render the same house and preserve fr
   const place = async (assetId: string, name: string, position: [number, number, number]) =>
     tool(request, 'create_object', { name, type: 'asset', assetId, position });
   await tool(request, 'create_object', {
-    name: 'Garden foreground', type: 'plane', position: [0, -3.2, 0],
-    rotation: [-Math.PI / 2, 0, 0], dimensions: [44, 44, 1], color: '#466143',
+    name: 'Garden foreground',
+    type: 'plane',
+    position: [0, -3.2, 0],
+    rotation: [-Math.PI / 2, 0, 0],
+    dimensions: [44, 44, 1],
+    color: '#466143',
     materialId: 'builtin:forest-floor',
   });
   await place('builtin:pnw-craftsman-shell', 'Perspective Craftsman shell', [0, 0, 0]);
@@ -320,7 +401,8 @@ test('orthographic and perspective cameras render the same house and preserve fr
   await page.waitForFunction(() => Boolean(window.__sceneReady));
   await expect(page.getByLabel('Camera projection')).toHaveValue('orthographic');
 
-  const ortho = (await tool(request, 'render_scene', { label: 'PNW house orthographic camera' })).result as Checkpoint;
+  const ortho = (await tool(request, 'render_scene', { label: 'PNW house orthographic camera' }))
+    .result as Checkpoint;
   const orthoPng = await request.get(ortho.screenshotUrl!);
   expect(ortho.status).toBe('complete');
   expect(orthoPng.ok()).toBe(true);
@@ -330,52 +412,71 @@ test('orthographic and perspective cameras render the same house and preserve fr
 
   const beforePerspective = (await (await request.get('/api/state')).json()) as Scene;
   await page.getByLabel('Camera projection').selectOption('perspective');
-  await expect.poll(async () => ((await (await request.get('/api/state')).json()) as Scene).camera.projection)
+  await expect
+    .poll(async () => ((await (await request.get('/api/state')).json()) as Scene).camera.projection)
     .toBe('perspective');
   await expect(page.getByLabel('Vertical field of view')).toHaveValue('38');
   await page.getByLabel('Vertical field of view').focus();
   await page.getByLabel('Vertical field of view').press('ArrowRight');
-  await expect.poll(async () => ((await (await request.get('/api/state')).json()) as Scene).camera.fov)
+  await expect
+    .poll(async () => ((await (await request.get('/api/state')).json()) as Scene).camera.fov)
     .toBe(39);
   await expect(page.getByLabel('Vertical field of view')).toHaveValue('39');
   await page.getByLabel('Vertical field of view').focus();
   await page.getByLabel('Vertical field of view').press('ArrowLeft');
-  await expect.poll(async () => ((await (await request.get('/api/state')).json()) as Scene).camera.fov)
+  await expect
+    .poll(async () => ((await (await request.get('/api/state')).json()) as Scene).camera.fov)
     .toBe(38);
   const perspectiveCamera = ((await (await request.get('/api/state')).json()) as Scene).camera;
   for (let axis = 0; axis < 3; axis++) {
-    expect(perspectiveCamera.position[axis]).toBeCloseTo(beforePerspective.camera.position[axis], 10);
+    expect(perspectiveCamera.position[axis]).toBeCloseTo(
+      beforePerspective.camera.position[axis],
+      10,
+    );
     expect(perspectiveCamera.target[axis]).toBeCloseTo(beforePerspective.camera.target[axis], 10);
   }
   const perspectiveState = (await (await request.get('/api/state')).json()) as Scene;
-  await page.waitForFunction((revision) => window.__sceneReady?.revision === revision, perspectiveState.revision);
+  await page.waitForFunction(
+    (revision) => window.__sceneReady?.revision === revision,
+    perspectiveState.revision,
+  );
 
-  const perspective = (await tool(request, 'render_scene', { label: 'PNW house 38 degree perspective camera' })).result as Checkpoint;
+  const perspective = (
+    await tool(request, 'render_scene', { label: 'PNW house 38 degree perspective camera' })
+  ).result as Checkpoint;
   const perspectivePng = await request.get(perspective.screenshotUrl!);
   expect(perspective.status).toBe('complete');
   expect(perspectivePng.ok()).toBe(true);
   const perspectiveBytes = await perspectivePng.body();
   await writeFile('artifacts/tests/pnw-camera-perspective.png', perspectiveBytes);
-  const changedPixels = await page.evaluate(async ([first, second]) => {
-    const decode = async (encoded: string) => {
-      const image = new Image();
-      image.src = `data:image/png;base64,${encoded}`;
-      await image.decode();
-      const canvas = document.createElement('canvas');
-      canvas.width = image.width;
-      canvas.height = image.height;
-      const context = canvas.getContext('2d')!;
-      context.drawImage(image, 0, 0);
-      return context.getImageData(0, 0, canvas.width, canvas.height).data;
-    };
-    const [a, b] = await Promise.all([decode(first), decode(second)]);
-    let changed = 0;
-    for (let i = 0; i < a.length; i += 4) {
-      if (Math.abs(a[i]! - b[i]!) + Math.abs(a[i + 1]! - b[i + 1]!) + Math.abs(a[i + 2]! - b[i + 2]!) > 24)
-        changed++;
-    }
-    return changed / (a.length / 4);
-  }, [orthoBytes.toString('base64'), perspectiveBytes.toString('base64')]);
+  const changedPixels = await page.evaluate(
+    async ([first, second]) => {
+      const decode = async (encoded: string) => {
+        const image = new Image();
+        image.src = `data:image/png;base64,${encoded}`;
+        await image.decode();
+        const canvas = document.createElement('canvas');
+        canvas.width = image.width;
+        canvas.height = image.height;
+        const context = canvas.getContext('2d')!;
+        context.drawImage(image, 0, 0);
+        return context.getImageData(0, 0, canvas.width, canvas.height).data;
+      };
+      const [a, b] = await Promise.all([decode(first), decode(second)]);
+      let changed = 0;
+      for (let i = 0; i < a.length; i += 4) {
+        if (
+          Math.abs(a[i]! - b[i]!) +
+            Math.abs(a[i + 1]! - b[i + 1]!) +
+            Math.abs(a[i + 2]! - b[i + 2]!) >
+          24
+        )
+          changed++;
+      }
+      return changed / (a.length / 4);
+    },
+    [orthoBytes.toString('base64'), perspectiveBytes.toString('base64')],
+  );
   expect(changedPixels, 'projection should change visible scene framing').toBeGreaterThan(0.02);
 
   const canvas = page.locator('canvas');
@@ -385,7 +486,12 @@ test('orthographic and perspective cameras render the same house and preserve fr
   await expect.poll(async () => (await canvas.boundingBox())?.width).not.toBe(oldCanvasBox!.width);
   const resized = await canvas.evaluate((element) => {
     const view = element as HTMLCanvasElement;
-    return { width: view.width, height: view.height, clientWidth: view.clientWidth, clientHeight: view.clientHeight };
+    return {
+      width: view.width,
+      height: view.height,
+      clientWidth: view.clientWidth,
+      clientHeight: view.clientHeight,
+    };
   });
   expect(resized.width).toBe(resized.clientWidth);
   expect(resized.height).toBe(resized.clientHeight);
@@ -396,21 +502,34 @@ test('orthographic and perspective cameras render the same house and preserve fr
   const beforeOrbit = ((await (await request.get('/api/state')).json()) as Scene).camera;
   await page.mouse.move(canvasBox!.x + canvasBox!.width / 2, canvasBox!.y + canvasBox!.height / 2);
   await page.mouse.down();
-  await page.mouse.move(canvasBox!.x + canvasBox!.width / 2 + 60, canvasBox!.y + canvasBox!.height / 2 + 20, { steps: 6 });
+  await page.mouse.move(
+    canvasBox!.x + canvasBox!.width / 2 + 60,
+    canvasBox!.y + canvasBox!.height / 2 + 20,
+    { steps: 6 },
+  );
   await page.mouse.up();
   expect(((await (await request.get('/api/state')).json()) as Scene).camera).toEqual(beforeOrbit);
   await page.getByRole('button', { name: 'Use current view' }).click();
-  await expect.poll(async () => ((await (await request.get('/api/state')).json()) as Scene).camera.position)
+  await expect
+    .poll(async () => ((await (await request.get('/api/state')).json()) as Scene).camera.position)
     .not.toEqual(beforeOrbit.position);
-  expect(((await (await request.get('/api/state')).json()) as Scene).camera)
-    .toMatchObject({ projection: 'perspective', fov: 38, verticalSize: 22 });
+  expect(((await (await request.get('/api/state')).json()) as Scene).camera).toMatchObject({
+    projection: 'perspective',
+    fov: 38,
+    verticalSize: 22,
+  });
 });
 
-test('agent can search, build, inspect, correct, save and export a PNW Craftsman house', async ({ page, request }) => {
+test('agent can search, build, inspect, correct, save and export a PNW Craftsman house', async ({
+  page,
+  request,
+}) => {
   const previous = (await (await request.get('/api/state')).json()) as Scene;
   for (const object of previous.objects) await tool(request, 'delete_object', { id: object.id });
   await tool(request, 'set_camera', {
-    position: [11, 8, -22], target: [0, -0.1, -0.8], verticalSize: 20,
+    position: [11, 8, -22],
+    target: [0, -0.1, -0.8],
+    verticalSize: 20,
   });
   await tool(request, 'set_lighting', {
     ambient: { color: '#dbe6e1', intensity: 1.45 },
@@ -418,30 +537,49 @@ test('agent can search, build, inspect, correct, save and export a PNW Craftsman
     environmentAssetId: 'builtin:pnw-overcast',
   });
 
-  const houseParts = (await tool(request, 'search_assets', { query: 'pnw craftsman', kind: 'model' })).result as {
-    id: string; name: string;
+  const houseParts = (
+    await tool(request, 'search_assets', { query: 'pnw craftsman', kind: 'model' })
+  ).result as {
+    id: string;
+    name: string;
   }[];
-  expect(houseParts.map((asset) => asset.id)).toEqual(expect.arrayContaining([
-    'builtin:pnw-craftsman-shell', 'builtin:pnw-gable-roof', 'builtin:pnw-porch',
-    'builtin:pnw-window', 'builtin:pnw-front-door',
-  ]));
+  expect(houseParts.map((asset) => asset.id)).toEqual(
+    expect.arrayContaining([
+      'builtin:pnw-craftsman-shell',
+      'builtin:pnw-gable-roof',
+      'builtin:pnw-porch',
+      'builtin:pnw-window',
+      'builtin:pnw-front-door',
+    ]),
+  );
   const models = new Set(houseParts.map((asset) => asset.id));
   const place = async (assetId: string, name: string, position: [number, number, number]) => {
     expect(models.has(assetId) || assetId.includes('pnw-')).toBe(true);
     return tool(request, 'create_object', { name, type: 'asset', assetId, position });
   };
   await tool(request, 'create_object', {
-    name: 'Forest floor', type: 'plane', position: [0, -3.04, 0],
-    rotation: [-Math.PI / 2, 0, 0], dimensions: [28, 26, 1], color: '#344c39',
-    roughness: 0.96, materialId: 'builtin:forest-floor',
+    name: 'Forest floor',
+    type: 'plane',
+    position: [0, -3.04, 0],
+    rotation: [-Math.PI / 2, 0, 0],
+    dimensions: [28, 26, 1],
+    color: '#344c39',
+    roughness: 0.96,
+    materialId: 'builtin:forest-floor',
   });
   await place('builtin:pnw-craftsman-shell', 'Cedar Craftsman house', [0, 0, 0]);
   await place('builtin:pnw-gable-roof', 'Charcoal shingle roof', [0, 1.8, 0]);
   await place('builtin:pnw-porch', 'Covered timber porch', [0, -1.55, -3.55]);
   await place('builtin:pnw-front-door', 'Glazed front door', [0, -1.7, -3.12]);
-  const overlappingWindow = (await place('builtin:pnw-window', 'Misplaced window', [0, -1.7, -3.12])).result as SceneObject;
+  const overlappingWindow = (
+    await place('builtin:pnw-window', 'Misplaced window', [0, -1.7, -3.12])
+  ).result as SceneObject;
   await place('builtin:pnw-window', 'East divided-light window', [2.75, -0.1, -3.12]);
-  const treePositions: [number, number, number][] = [[-9, 1.4, 5], [9, 1.4, 5], [9.5, 1.4, -3.5]];
+  const treePositions: [number, number, number][] = [
+    [-9, 1.4, 5],
+    [9, 1.4, 5],
+    [9.5, 1.4, -3.5],
+  ];
   for (const [index, position] of treePositions.entries())
     await place('builtin:pnw-evergreen', `Douglas fir ${index + 1}`, position);
   await place('builtin:pnw-fern', 'Front fern', [-3.7, -2.8, -3.8]);
@@ -461,50 +599,76 @@ test('agent can search, build, inspect, correct, save and export a PNW Craftsman
   });
   await page.goto('/');
   await expect(page.getByRole('heading', { name: 'A world in the making.' })).toBeVisible();
-  await expect.poll(() => page.evaluate(() => window.__sceneReady?.objectIds.length)).toBeGreaterThan(10);
+  await expect
+    .poll(() => page.evaluate(() => window.__sceneReady?.objectIds.length))
+    .toBeGreaterThan(10);
   const readyFrames = await page.evaluate(
     () => (window as Window & { __fieldworkRafCalls?: number }).__fieldworkRafCalls ?? 0,
   );
   await page.waitForTimeout(300);
   expect(
-    await page.evaluate(() => (window as Window & { __fieldworkRafCalls?: number }).__fieldworkRafCalls ?? 0),
+    await page.evaluate(
+      () => (window as Window & { __fieldworkRafCalls?: number }).__fieldworkRafCalls ?? 0,
+    ),
   ).toBe(readyFrames);
-  const before = (await tool(request, 'render_scene', { label: 'PNW house before correction' })).result as Checkpoint;
+  const before = (await tool(request, 'render_scene', { label: 'PNW house before correction' }))
+    .result as Checkpoint;
   const outputDir = 'artifacts/tests';
   await mkdir(outputDir, { recursive: true });
   const beforePng = await (await request.get(before.screenshotUrl!)).body();
   await writeFile(`${outputDir}/pnw-house-before.png`, beforePng);
 
-  const corrected = await tool(request, 'update_object', { id: overlappingWindow.id, name: 'West divided-light window', position: [-2.75, -0.1, -3.12] });
-  await expect.poll(() => page.evaluate(() => window.__sceneReady?.revision)).toBe(corrected.sceneRevision);
+  const corrected = await tool(request, 'update_object', {
+    id: overlappingWindow.id,
+    name: 'West divided-light window',
+    position: [-2.75, -0.1, -3.12],
+  });
+  await expect
+    .poll(() => page.evaluate(() => window.__sceneReady?.revision))
+    .toBe(corrected.sceneRevision);
   const correctedFrames = await page.evaluate(
     () => (window as Window & { __fieldworkRafCalls?: number }).__fieldworkRafCalls ?? 0,
   );
   expect(correctedFrames).toBeGreaterThan(readyFrames);
   await page.waitForTimeout(300);
   expect(
-    await page.evaluate(() => (window as Window & { __fieldworkRafCalls?: number }).__fieldworkRafCalls ?? 0),
+    await page.evaluate(
+      () => (window as Window & { __fieldworkRafCalls?: number }).__fieldworkRafCalls ?? 0,
+    ),
   ).toBe(correctedFrames);
-  const after = (await tool(request, 'render_scene', { label: 'PNW house after correction' })).result as Checkpoint;
+  const after = (await tool(request, 'render_scene', { label: 'PNW house after correction' }))
+    .result as Checkpoint;
   const afterPng = await (await request.get(after.screenshotUrl!)).body();
   await writeFile(`${outputDir}/pnw-house-after.png`, afterPng);
   const state = (await (await request.get('/api/state')).json()) as Scene;
   expect(state.objects.some((object) => object.name === 'West divided-light window')).toBe(true);
   expect(state.lighting.environmentAssetId).toBe('builtin:pnw-overcast');
 
-  const exported = (await tool(request, 'export_scene')).result as { artifactUrl: string; objectCount: number };
+  const exported = (await tool(request, 'export_scene')).result as {
+    artifactUrl: string;
+    objectCount: number;
+  };
   expect(exported.objectCount).toBe(state.objects.filter((object) => object.visible).length);
   const glb = Buffer.from(await (await request.get(exported.artifactUrl)).body());
   expect(glb.subarray(0, 4).toString()).toBe('glTF');
   const jsonLength = glb.readUInt32LE(12);
-  const gltf = JSON.parse(glb.subarray(20, 20 + jsonLength).toString().trim()) as { images?: unknown[]; materials?: unknown[] };
+  const gltf = JSON.parse(
+    glb
+      .subarray(20, 20 + jsonLength)
+      .toString()
+      .trim(),
+  ) as { images?: unknown[]; materials?: unknown[] };
   expect(gltf.materials?.length).toBeGreaterThan(0);
   expect(gltf.images?.length).toBeGreaterThan(0);
   await tool(request, 'save_scene', { name: 'pnw-craftsman-e2e' });
   const loaded = (await tool(request, 'load_scene', { name: 'pnw-craftsman-e2e' })).result as Scene;
-  expect(loaded.objects.map((object) => object.id)).toEqual(state.objects.map((object) => object.id));
+  expect(loaded.objects.map((object) => object.id)).toEqual(
+    state.objects.map((object) => object.id),
+  );
   expect(loaded.objects.filter((object) => object.type === 'asset')).toHaveLength(14);
-  expect(loaded.objects.find((object) => object.name === 'West divided-light window')?.position[0]).toBe(-2.75);
+  expect(
+    loaded.objects.find((object) => object.name === 'West divided-light window')?.position[0],
+  ).toBe(-2.75);
 
   const runDir = `artifacts/runs/pnw-house-e2e-${Date.now()}`;
   await mkdir(runDir, { recursive: true });
@@ -512,27 +676,43 @@ test('agent can search, build, inspect, correct, save and export a PNW Craftsman
   await writeFile(`${runDir}/before.png`, beforePng);
   await writeFile(`${runDir}/after.png`, afterPng);
   const events = (await (await request.get('/api/events')).json()) as unknown[];
-  await writeFile(`${runDir}/events.jsonl`, `${events.map((event) => JSON.stringify(event)).join('\n')}\n`);
-  await writeFile(`${runDir}/review.md`, [
-    '# PNW Craftsman house agent run',
-    '',
-    `Run: ${runDir.split('/').at(-1)}`,
-    `Scene revision: ${loaded.revision}`,
-    `Objects: ${loaded.objects.length} total, ${loaded.objects.filter((object) => object.type === 'asset').length} assets`,
-    '',
-    'The agent searched the built-in PNW catalog, assembled a Craftsman house with a gable roof, covered porch, divided-light windows, entry door, Douglas firs, ferns, boulder, and stepping stones. The first render showed a window overlapping the entry area; the agent corrected its position to flank the porch, rerendered, saved and reloaded the scene, and exported a GLB.',
-    '',
-    'Visual review: recognizable Northwest house composition, visible timber porch and roof, windows clear of the porch posts, and landscaping framed around the building. The included starter models are procedural and intentionally simple; geometry and foliage remain stylized rather than photorealistic.',
-  ].join('\n'));
+  await writeFile(
+    `${runDir}/events.jsonl`,
+    `${events.map((event) => JSON.stringify(event)).join('\n')}\n`,
+  );
+  await writeFile(
+    `${runDir}/review.md`,
+    [
+      '# PNW Craftsman house agent run',
+      '',
+      `Run: ${runDir.split('/').at(-1)}`,
+      `Scene revision: ${loaded.revision}`,
+      `Objects: ${loaded.objects.length} total, ${loaded.objects.filter((object) => object.type === 'asset').length} assets`,
+      '',
+      'The agent searched the built-in PNW catalog, assembled a Craftsman house with a gable roof, covered porch, divided-light windows, entry door, Douglas firs, ferns, boulder, and stepping stones. The first render showed a window overlapping the entry area; the agent corrected its position to flank the porch, rerendered, saved and reloaded the scene, and exported a GLB.',
+      '',
+      'Visual review: recognizable Northwest house composition, visible timber porch and roof, windows clear of the porch posts, and landscaping framed around the building. The included starter models are procedural and intentionally simple; geometry and foliage remain stylized rather than photorealistic.',
+    ].join('\n'),
+  );
 });
-test('local asset previews import into the catalog and can be used through public scene tools', async ({ page, request }) => {
+test('local asset previews import into the catalog and can be used through public scene tools', async ({
+  page,
+  request,
+}) => {
   const errors: string[] = [];
   page.on('pageerror', (error) => errors.push(error.message));
-  page.on('console', (message) => { if (message.type() === 'error') errors.push(message.text()); });
+  page.on('console', (message) => {
+    if (message.type() === 'error') errors.push(message.text());
+  });
   await page.goto('/');
   await expect(page.getByRole('heading', { name: 'A world in the making.' })).toBeVisible();
   const importer = page.getByRole('form', { name: 'Import a local asset' });
-  const importOne = async (file: { name: string; mimeType: string; buffer: Buffer }, name: string, tags: string[], preview: '3d' | 'image') => {
+  const importOne = async (
+    file: { name: string; mimeType: string; buffer: Buffer },
+    name: string,
+    tags: string[],
+    preview: '3d' | 'image',
+  ) => {
     await importer.getByLabel('Asset file').setInputFiles(file);
     await importer.getByLabel('Asset name').fill(name);
     await importer.getByLabel('Asset tags').fill(tags.join(', '));
@@ -540,7 +720,10 @@ test('local asset previews import into the catalog and can be used through publi
     else await expect(importer.getByAltText(`Preview of ${file.name}`)).toBeVisible();
     if (file.name.endsWith('.glb')) {
       await mkdir('artifacts/tests', { recursive: true });
-      await page.screenshot({ path: 'artifacts/tests/local-asset-import-preview.png', fullPage: true });
+      await page.screenshot({
+        path: 'artifacts/tests/local-asset-import-preview.png',
+        fullPage: true,
+      });
     }
     const button = importer.getByRole('button', { name: 'Add to local catalog' });
     await expect(button).toBeEnabled();
@@ -548,22 +731,54 @@ test('local asset previews import into the catalog and can be used through publi
   };
 
   const revisionBeforeImport = ((await (await request.get('/api/state')).json()) as Scene).revision;
-  await importOne({ name: 'cedar-house.glb', mimeType: 'model/gltf-binary', buffer: tinyGlb() }, 'Cedar PNW house', ['house', 'pnw'], '3d');
+  await importOne(
+    { name: 'cedar-house.glb', mimeType: 'model/gltf-binary', buffer: tinyGlb() },
+    'Cedar PNW house',
+    ['house', 'pnw'],
+    '3d',
+  );
   let found = await tool(request, 'search_assets', { query: 'pnw house', kind: 'model' });
   const house = (found.result as { id: string }[]).find((asset) => asset.id.startsWith('local:'))!;
-  const placed = await tool(request, 'create_object', { name: 'Imported Cedar House', type: 'asset', assetId: house.id });
-  await expect.poll(() => page.evaluate(() => window.__sceneReady?.objectIds)).toContain((placed.result as SceneObject).id);
+  const placed = await tool(request, 'create_object', {
+    name: 'Imported Cedar House',
+    type: 'asset',
+    assetId: house.id,
+  });
+  await expect
+    .poll(() => page.evaluate(() => window.__sceneReady?.objectIds))
+    .toContain((placed.result as SceneObject).id);
 
-  await importOne({ name: 'overcast.hdr', mimeType: 'image/vnd.radiance', buffer: tinyHdr() }, 'Local overcast sky', ['pnw'], '3d');
+  await importOne(
+    { name: 'overcast.hdr', mimeType: 'image/vnd.radiance', buffer: tinyHdr() },
+    'Local overcast sky',
+    ['pnw'],
+    '3d',
+  );
   found = await tool(request, 'search_assets', { query: 'overcast', kind: 'environment' });
-  const environment = (found.result as { id: string }[]).find((asset) => asset.id.startsWith('local:'))!;
+  const environment = (found.result as { id: string }[]).find((asset) =>
+    asset.id.startsWith('local:'),
+  )!;
   await tool(request, 'set_lighting', { environmentAssetId: environment.id });
 
-  await importOne({ name: 'cedar.png', mimeType: 'image/png', buffer: tinyPng() }, 'Cedar color map', ['wood'], 'image');
+  await importOne(
+    { name: 'cedar.png', mimeType: 'image/png', buffer: tinyPng() },
+    'Cedar color map',
+    ['wood'],
+    'image',
+  );
   found = await tool(request, 'search_assets', { query: 'cedar color', kind: 'material' });
-  const material = (found.result as { id: string }[]).find((asset) => asset.id.startsWith('local:'))!;
-  await tool(request, 'create_object', { name: 'Cedar sample', type: 'box', position: [3, 0, 0], materialId: material.id });
-  expect(((await (await request.get('/api/state')).json()) as Scene).revision).toBe(revisionBeforeImport + 3);
+  const material = (found.result as { id: string }[]).find((asset) =>
+    asset.id.startsWith('local:'),
+  )!;
+  await tool(request, 'create_object', {
+    name: 'Cedar sample',
+    type: 'box',
+    position: [3, 0, 0],
+    materialId: material.id,
+  });
+  expect(((await (await request.get('/api/state')).json()) as Scene).revision).toBe(
+    revisionBeforeImport + 3,
+  );
   expect(errors).toEqual([]);
 });
 test('unknown checkpoint surfaces a visible failure instead of claiming render readiness', async ({

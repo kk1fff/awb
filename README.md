@@ -37,7 +37,7 @@ Then open http://127.0.0.1:3001. No model credentials are needed. The applicatio
 
 ## Agent tools
 
-The `fieldwork` MCP server exposes the same validated tools as the HTTP API. The tool contract and workflow are documented in [the tool guide](docs/tools.md) and [agent workflow](docs/agent-workflow.md). Scene-building agents must use public tools rather than editing scene JSON or renderer source.
+The `fieldwork` MCP server exposes the same validated tools as the HTTP API. The tool contract and workflow are documented in [the tool guide](docs/tools.md) and [agent workflow](docs/agent-workflow.md). Scene-building agents must use public tools rather than editing scene JSON or renderer source. Create a logical workspace with `POST /api/workspaces`, open it in the UI with `/?workspace=<uuid>`, or set `SCENE_WORKSPACE_ID=<uuid>` for an MCP/CLI client. Workspaces isolate scene state, local assets, saves, events, checkpoints, and runs; `promote_asset` explicitly copies a local asset or verified scene export into another workspace.
 
 ```bash
 npm run --silent tool -- create_object '{"name":"tree_trunk","type":"cylinder","position":[2,1,0],"dimensions":[0.3,2,0.3],"color":"#795548"}'
@@ -69,15 +69,16 @@ Named saves: `data/scenes/<name>.json`. Run evidence: `artifacts/runs/<run-id>/`
 
 Generated output is ignored by Git. Keep artifacts to revisit a run; the live API/UI expose the current run. Older runs remain available on disk. Reusing an existing `RUN_ID` is rejected to protect evidence.
 
-| Variable        | Default                                  | Purpose                             |
-| --------------- | ---------------------------------------- | ----------------------------------- |
-| `PORT`          | `3001`                                   | API / production UI port            |
-| `VITE_PORT`     | `5173`                                   | Development UI port                 |
-| `CLIENT_URL`    | Development UI, or production API origin | URL reachable by screenshot browser |
-| `DATA_DIR`      | `data`                                   | Named saves and optional local asset catalog (`assets/catalog.json`) |
-| `ARTIFACTS_DIR` | `artifacts/runs`                         | Run directory parent                |
-| `RUN_ID`        | Timestamp + random suffix                | New run identifier                  |
-| `SCENE_API`     | `http://127.0.0.1:3001`                  | CLI / demo API base                 |
+| Variable             | Default                                  | Purpose                                                              |
+| -------------------- | ---------------------------------------- | -------------------------------------------------------------------- |
+| `PORT`               | `3001`                                   | API / production UI port                                             |
+| `VITE_PORT`          | `5173`                                   | Development UI port                                                  |
+| `CLIENT_URL`         | Development UI, or production API origin | URL reachable by screenshot browser                                  |
+| `DATA_DIR`           | `data`                                   | Named saves and optional local asset catalog (`assets/catalog.json`) |
+| `ARTIFACTS_DIR`      | `artifacts/runs`                         | Run directory parent                                                 |
+| `RUN_ID`             | Timestamp + random suffix                | New run identifier                                                   |
+| `SCENE_API`          | `http://127.0.0.1:3001`                  | CLI / MCP API base                                                   |
+| `SCENE_WORKSPACE_ID` | `default`                                | CLI / MCP logical workspace context                                  |
 
 For a custom development API port, update the Vite proxy environment as described in the tool guide.
 
@@ -97,4 +98,4 @@ See [the MVP verification report](docs/mvp-validation.md) for the checks actuall
 
 ## Limits
 
-One local user, one active scene per process, five opaque primitives, orthographic and perspective cameras (orthographic by default), flat object hierarchy, and ambient/directional lighting. No grouping, undo, animation, or imported mesh editing. Commands are serialized; screenshot capture briefly queues subsequent tools while read routes remain available. JSON saves and JSONL history are local files, not a transactional database. The MCP bootstrap starts the local app only; it does not install or authenticate the agent CLI.
+One local user with path-scoped logical workspaces (not an authentication or OS security boundary), five opaque primitives, orthographic and perspective cameras (orthographic by default), flat object hierarchy, and ambient/directional lighting. No grouping, undo, animation, or imported mesh editing. Commands serialize within each workspace; separate workspace queues run independently. Screenshot capture briefly queues tools in its own workspace while read routes remain available. JSON saves and JSONL history are local files, not a transactional database. The MCP bootstrap starts the local app only; it does not install or authenticate the agent CLI.

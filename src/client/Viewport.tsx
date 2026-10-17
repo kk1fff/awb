@@ -6,12 +6,14 @@ import { buildWorld, disposeWorld } from './world.js';
 
 export function Viewport({
   scene,
+  workspaceId,
   captureMode = false,
   onSelect,
   onCamera,
   onError,
 }: {
   scene: Scene;
+  workspaceId?: string;
   captureMode?: boolean;
   onSelect?: (id: string) => void;
   onCamera?: (camera: CameraState) => void;
@@ -78,97 +80,104 @@ export function Viewport({
     renderer.domElement.addEventListener('webglcontextlost', contextLost);
     let down: ((event: PointerEvent) => void) | undefined;
     let up: ((event: PointerEvent) => void) | undefined;
-    void buildWorld(scene).then((loadedWorld) => {
-      if (disposed) {
-        disposeWorld(loadedWorld);
-        return;
-      }
-      world = loadedWorld;
-      const canonical = JSON.stringify(scene.camera);
-      const view =
-        !captureMode && localView.current?.canonical === canonical
-          ? localView.current.camera
-          : scene.camera;
-      camera =
-        view.projection === 'perspective'
-          ? new THREE.PerspectiveCamera(view.fov, 1, 0.1, 1000)
-          : new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 1000);
-      camera.position.fromArray(view.position);
-      camera.lookAt(new THREE.Vector3(...view.target));
-      controls = new OrbitControls(camera, renderer.domElement);
-      controls.target.fromArray(view.target);
-      controls.enabled = !captureMode;
-      controls.enableDamping = false;
-      controls.minZoom = 0.1;
-      controls.maxZoom = 20;
-      controls.minDistance = 0.1;
-      controls.maxDistance = 10000;
-      controls.update();
-      const resize = () => {
-        if (!camera) return;
-        const width = element.clientWidth;
-        const height = element.clientHeight;
-        const aspect = width / Math.max(height, 1);
-        if (camera instanceof THREE.OrthographicCamera) {
-          const half = view.verticalSize / 2;
-          Object.assign(camera, {
-            left: -half * aspect,
-            right: half * aspect,
-            top: half,
-            bottom: -half,
-          });
-        } else {
-          camera.aspect = aspect;
+    void buildWorld(scene, workspaceId)
+      .then((loadedWorld) => {
+        if (disposed) {
+          disposeWorld(loadedWorld);
+          return;
         }
-        camera!.updateProjectionMatrix();
-        renderer.setSize(width, height);
-        scheduleRender();
-      };
-      observer = new ResizeObserver(resize);
-      observer.observe(element);
-      resize();
-      const reportCamera = () => {
-        const current = {
-          position: camera!.position.toArray(),
-          target: controls!.target.toArray(),
-          verticalSize:
-            camera instanceof THREE.OrthographicCamera
-              ? view.verticalSize / camera.zoom
-              : view.verticalSize,
-          projection: view.projection,
-          fov: view.fov,
+        world = loadedWorld;
+        const canonical = JSON.stringify(scene.camera);
+        const view =
+          !captureMode && localView.current?.canonical === canonical
+            ? localView.current.camera
+            : scene.camera;
+        camera =
+          view.projection === 'perspective'
+            ? new THREE.PerspectiveCamera(view.fov, 1, 0.1, 1000)
+            : new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 1000);
+        camera.position.fromArray(view.position);
+        camera.lookAt(new THREE.Vector3(...view.target));
+        controls = new OrbitControls(camera, renderer.domElement);
+        controls.target.fromArray(view.target);
+        controls.enabled = !captureMode;
+        controls.enableDamping = false;
+        controls.minZoom = 0.1;
+        controls.maxZoom = 20;
+        controls.minDistance = 0.1;
+        controls.maxDistance = 10000;
+        controls.update();
+        const resize = () => {
+          if (!camera) return;
+          const width = element.clientWidth;
+          const height = element.clientHeight;
+          const aspect = width / Math.max(height, 1);
+          if (camera instanceof THREE.OrthographicCamera) {
+            const half = view.verticalSize / 2;
+            Object.assign(camera, {
+              left: -half * aspect,
+              right: half * aspect,
+              top: half,
+              bottom: -half,
+            });
+          } else {
+            camera.aspect = aspect;
+          }
+          camera!.updateProjectionMatrix();
+          renderer.setSize(width, height);
+          scheduleRender();
         };
-        if (!captureMode) localView.current = { canonical, camera: current };
-        callbacks.current.onCamera?.(current);
-      };
-      controls.addEventListener('change', () => {
+        observer = new ResizeObserver(resize);
+        observer.observe(element);
+        resize();
+        const reportCamera = () => {
+          const current = {
+            position: camera!.position.toArray(),
+            target: controls!.target.toArray(),
+            verticalSize:
+              camera instanceof THREE.OrthographicCamera
+                ? view.verticalSize / camera.zoom
+                : view.verticalSize,
+            projection: view.projection,
+            fov: view.fov,
+          };
+          if (!captureMode) localView.current = { canonical, camera: current };
+          callbacks.current.onCamera?.(current);
+        };
+        controls.addEventListener('change', () => {
+          reportCamera();
+          scheduleRender();
+        });
         reportCamera();
+        down = (event) => {
+          pointer = { x: event.clientX, y: event.clientY };
+        };
+        up = (event) => {
+          if (!pointer || Math.hypot(event.clientX - pointer.x, event.clientY - pointer.y) > 5)
+            return;
+          const rect = renderer.domElement.getBoundingClientRect();
+          const ray = new THREE.Raycaster();
+          ray.setFromCamera(
+            new THREE.Vector2(
+              ((event.clientX - rect.left) / rect.width) * 2 - 1,
+              (-(event.clientY - rect.top) / rect.height) * 2 + 1,
+            ),
+            camera!,
+          );
+          const hit = ray
+            .intersectObjects(world!.children, true)
+            .find((h) => h.object.visible && h.object.userData.id);
+          if (hit) callbacks.current.onSelect?.(hit.object.userData.id as string);
+        };
+        renderer.domElement.addEventListener('pointerdown', down);
+        renderer.domElement.addEventListener('pointerup', up);
         scheduleRender();
+      })
+      .catch((error) => {
+        const message = `Scene asset loading failed: ${String(error)}`;
+        window.__sceneError = message;
+        callbacks.current.onError?.(message);
       });
-      reportCamera();
-      down = (event) => { pointer = { x: event.clientX, y: event.clientY }; };
-      up = (event) => {
-        if (!pointer || Math.hypot(event.clientX - pointer.x, event.clientY - pointer.y) > 5) return;
-        const rect = renderer.domElement.getBoundingClientRect();
-        const ray = new THREE.Raycaster();
-        ray.setFromCamera(
-          new THREE.Vector2(
-            ((event.clientX - rect.left) / rect.width) * 2 - 1,
-            (-(event.clientY - rect.top) / rect.height) * 2 + 1,
-          ),
-          camera!,
-        );
-        const hit = ray.intersectObjects(world!.children, true).find((h) => h.object.visible && h.object.userData.id);
-        if (hit) callbacks.current.onSelect?.(hit.object.userData.id as string);
-      };
-      renderer.domElement.addEventListener('pointerdown', down);
-      renderer.domElement.addEventListener('pointerup', up);
-      scheduleRender();
-    }).catch((error) => {
-      const message = `Scene asset loading failed: ${String(error)}`;
-      window.__sceneError = message;
-      callbacks.current.onError?.(message);
-    });
     return () => {
       disposed = true;
       cancelAnimationFrame(animation);
@@ -181,6 +190,6 @@ export function Viewport({
       renderer.dispose();
       renderer.domElement.remove();
     };
-  }, [scene, captureMode]);
+  }, [scene, captureMode, workspaceId]);
   return <div ref={host} className="viewport-canvas" data-testid="viewport" />;
 }

@@ -4,6 +4,14 @@ Submit `POST /api/tools` with JSON `{ "tool": "create_object", "arguments": { ..
 
 Fetch `GET /api/tools` for complete JSON schemas, including validation limits. `GET /api/health` reports run ID and tool version. Read endpoints are `/api/state`, `/api/events`, `/api/checkpoints`, `/api/reviews`, and `/api/checkpoints/<id>/scene`. `GET /api/stream` is a server-sent event stream with an initial snapshot, tool-start notifications, and updates; clients reconnecting receive a fresh snapshot. Reads outside the tool endpoint do not create tool events.
 
+## Isolated workspaces
+
+The legacy `/api/*` routes and `/artifacts/*` remain the default workspace and continue using `DATA_DIR` and `ARTIFACTS_DIR`. Create an isolated logical workspace with `POST /api/workspaces` and `{ "name": "Fir specialist", "owner": "agent-name" }`; list them with `GET /api/workspaces`. The response includes a UUID `id` and current `runId`. Use `/api/workspaces/<id>/tools`, `/state`, `/events`, `/checkpoints`, `/reviews`, `/stream`, `/assets/*`, and `/checkpoints/<id>/scene` for that workspace. Artifact URLs are scoped as `/api/workspaces/<id>/artifacts/<runId>/...`. The browser uses `/?workspace=<id>` and its workspace selector can switch or create a workspace.
+
+Workspaces have separate local catalogs, named saves, scene state, command queues, event streams, checkpoints, reviews, and run artifact directories. Built-in assets are shared read-only. A workspace is reopened lazily from its UUID manifest after restart, with a new unique run ID. Named saves and prior run evidence persist. The active unsaved scene is volatile and starts empty after restart; there is no unsaved-scene recovery. Workspace separation is a local workflow boundary, not an authentication or operating-system security boundary.
+
+Configure MCP or CLI clients with `SCENE_WORKSPACE_ID=<uuid>` (or `default`) to select the command endpoint without adding workspace arguments to scene tools. `SCENE_API` still selects the API origin. A specialist can hand off either a local catalog asset or an `export_scene` GLB with `promote_asset` in the target workspace. For example, first call `export_scene` in the source, then in the target call `{ "sourceWorkspaceId": "<source-uuid>", "sourceRunId": "<source-run-id>", "sourceExportExecutionId": "<export-execution-uuid>" }`. For a catalog asset, pass `sourceWorkspaceId` and `sourceAssetId` instead. Promotion copies bytes into the target catalog under a new ID and records the source lineage in the target tool event. A scene export contains all visible scene geometry, so use one specialist workspace per intended submodel.
+
 ## Coordinates and defaults
 
 Right-handed, Y-up; positions are object centers in world units. Rotations use radians and Euler XYZ order. Dimensions are full local width/height/depth before additional scale. A cylinder/cone has its axis on Y and elliptical X/Z diameters. Spheres can be scaled into ellipsoids. A plane is local XY with no thickness; its depth is ignored. Ground plane example: dimensions `[12,10,1]`, rotation `[-1.5707963267948966,0,0]`.
@@ -46,21 +54,21 @@ Supported local files are self-contained glTF 2.0 GLB models with embedded PBR t
 
 ## Operations
 
-| Tool             | Arguments                                                                                 | Result                                                                       |
-| ---------------- | ----------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
-| `create_object`  | Required `name`, `type`: box/sphere/cylinder/cone/plane/asset; asset type requires `assetId`; optional object properties above | Complete object with UUID                                                    |
-| `update_object`  | Required `id`; any subset of name, position, rotation, dimensions, scale, color, visible  | Updated complete object                                                      |
-| `delete_object`  | `id`                                                                                      | Deleted ID                                                                   |
-| `list_objects`   | `{}`                                                                                      | Array of complete object records                                             |
-| `inspect_object` | `id`                                                                                      | Complete object record                                                       |
-| `search_assets`  | `query` (defaults empty), optional `kind`: model/material/environment, `limit` (default 20, max 50) | Matching catalog records with stable IDs and placement metadata             |
-| `set_camera`     | Any subset of position, target, verticalSize, projection (`orthographic`/`perspective`), fov (vertical degrees, 10–100) | Complete canonical camera                                                    |
-| `set_lighting`   | Partial ambient/directional objects (including `shadowSoftness`), optional `environmentAssetId`, `backgroundMode`, and `backgroundColor` | Complete lighting |
-| `render_scene`   | Optional `label`                                                                          | Complete checkpoint metadata, PNG path/URL, snapshot URL, revision           |
-| `export_scene`   | `{}`                                                                                      | GLB file name, artifact URL, scene revision, visible object count, byte size |
-| `save_scene`     | `name`                                                                                    | Save name, absolute file path, execution ID, revision                        |
-| `load_scene`     | `name`                                                                                    | Loaded scene with new active revision                                        |
-| `record_review`  | See below                                                                                 | Persisted review                                                             |
+| Tool             | Arguments                                                                                                                                | Result                                                                       |
+| ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| `create_object`  | Required `name`, `type`: box/sphere/cylinder/cone/plane/asset; asset type requires `assetId`; optional object properties above           | Complete object with UUID                                                    |
+| `update_object`  | Required `id`; any subset of name, position, rotation, dimensions, scale, color, visible                                                 | Updated complete object                                                      |
+| `delete_object`  | `id`                                                                                                                                     | Deleted ID                                                                   |
+| `list_objects`   | `{}`                                                                                                                                     | Array of complete object records                                             |
+| `inspect_object` | `id`                                                                                                                                     | Complete object record                                                       |
+| `search_assets`  | `query` (defaults empty), optional `kind`: model/material/environment, `limit` (default 20, max 50)                                      | Matching catalog records with stable IDs and placement metadata              |
+| `set_camera`     | Any subset of position, target, verticalSize, projection (`orthographic`/`perspective`), fov (vertical degrees, 10–100)                  | Complete canonical camera                                                    |
+| `set_lighting`   | Partial ambient/directional objects (including `shadowSoftness`), optional `environmentAssetId`, `backgroundMode`, and `backgroundColor` | Complete lighting                                                            |
+| `render_scene`   | Optional `label`                                                                                                                         | Complete checkpoint metadata, PNG path/URL, snapshot URL, revision           |
+| `export_scene`   | `{}`                                                                                                                                     | GLB file name, artifact URL, scene revision, visible object count, byte size |
+| `save_scene`     | `name`                                                                                                                                   | Save name, absolute file path, execution ID, revision                        |
+| `load_scene`     | `name`                                                                                                                                   | Loaded scene with new active revision                                        |
+| `record_review`  | See below                                                                                                                                | Persisted review                                                             |
 
 All input objects reject unknown fields. Patch arrays replace whole triples. IDs/types cannot be changed by update. Scene mutations (create/update/delete/camera/lighting/load) increment revision once on success, even if values are unchanged. Read/save/render/export/review commands preserve revision. Failed commands preserve scene state and revision. The browser receives live updates while a command runs and after its result is recorded.
 

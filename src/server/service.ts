@@ -29,6 +29,8 @@ export interface ServiceOptions {
   runId: string;
   clientUrl: string;
   capture?: Capture;
+  workspaceId?: string;
+  promoteAsset?: (args: Record<string, unknown>) => Promise<unknown>;
 }
 export async function atomicJson(file: string, value: unknown): Promise<void> {
   const temp = `${file}.${randomUUID()}.tmp`;
@@ -90,6 +92,7 @@ export class ToolService {
     let tool = 'invalid_request';
     let args: unknown = input;
     let response: ToolResponse;
+    let dispatchedResult: unknown;
     try {
       const request = envelope.parse(input);
       tool = request.tool;
@@ -108,6 +111,7 @@ export class ToolService {
         sceneRevision: this.engine.snapshot().revision,
       });
       const result = await this.dispatch(tool as ToolName, validated, executionId, timestamp);
+      dispatchedResult = result;
       response = {
         success: true,
         executionId,
@@ -148,12 +152,23 @@ export class ToolService {
       tool,
       arguments: args,
       runId: this.options.runId,
+      ...(this.options.workspaceId ? { workspaceId: this.options.workspaceId } : {}),
     };
     try {
       await appendFile(path.join(this.runDir, 'events.jsonl'), `${JSON.stringify(event)}\n`);
       this.events.push(event);
     } catch (error) {
       this.engine.restore(previous);
+      if (tool === 'promote_asset') {
+        const promoted = dispatchedResult as { asset?: { id?: string } } | undefined;
+        if (promoted?.asset?.id) {
+          try {
+            await this.assets.removeLocalAsset(promoted.asset.id);
+          } catch (rollbackError) {
+            console.error('Cannot roll back unrecorded asset promotion', rollbackError);
+          }
+        }
+      }
       console.error('Cannot record execution event', error);
       this.publish({ type: 'update', executionId, sceneRevision: previous.revision });
       return {
@@ -176,8 +191,20 @@ export class ToolService {
     executionId: string,
     timestamp: string,
   ): Promise<unknown> {
+    if (tool === 'promote_asset') {
+      if (!this.options.promoteAsset)
+        throw new ToolError(
+          'PROMOTION_UNAVAILABLE',
+          'Asset promotion is unavailable in this workspace.',
+        );
+      return this.options.promoteAsset(args);
+    }
     if (tool === 'search_assets')
-      return this.assets.search(args.query as string, args.kind as 'model' | 'material' | 'environment' | undefined, args.limit as number);
+      return this.assets.search(
+        args.query as string,
+        args.kind as 'model' | 'material' | 'environment' | undefined,
+        args.limit as number,
+      );
     let commandArgs = args;
     if (tool === 'create_object') {
       if (args.type === 'asset') {
@@ -239,7 +266,10 @@ export class ToolService {
       } catch {
         throw new ToolError('INVALID_SCENE', 'Saved scene contains invalid JSON');
       }
-      const next = value as { objects?: Array<{ type?: string; assetId?: string; materialId?: string }>; lighting?: { environmentAssetId?: string } };
+      const next = value as {
+        objects?: Array<{ type?: string; assetId?: string; materialId?: string }>;
+        lighting?: { environmentAssetId?: string };
+      };
       for (const object of next.objects ?? []) {
         if (object.type === 'asset' && object.assetId) {
           const asset = await this.assets.get(object.assetId, 'model');
@@ -258,8 +288,16 @@ export class ToolService {
     }
     if (tool === 'render_scene')
       return this.render(args.label as string | undefined, executionId, timestamp);
-    if (tool === 'export_scene')
-      return exportScene(this.engine.snapshot(), this.runDir, executionId, this.options.clientUrl);
+    if (tool === 'export_scene') {
+      const clientUrl =
+        this.options.workspaceId && this.options.workspaceId !== 'default'
+          ? `${this.options.clientUrl}/?workspace=${encodeURIComponent(this.options.workspaceId)}`
+          : this.options.clientUrl;
+      const result = await exportScene(this.engine.snapshot(), this.runDir, executionId, clientUrl);
+      if (this.options.workspaceId && this.options.workspaceId !== 'default')
+        result.artifactUrl = `/api/workspaces/${this.options.workspaceId}/artifacts/${this.options.runId}/exports/${result.fileName}`;
+      return result;
+    }
     if (tool === 'record_review') {
       const review = {
         ...args,
@@ -325,7 +363,10 @@ export class ToolService {
       timestamp,
       sceneRevision: scene.revision,
       status: 'rendering',
-      sceneUrl: `/api/checkpoints/${id}/scene`,
+      sceneUrl:
+        this.options.workspaceId && this.options.workspaceId !== 'default'
+          ? `/api/workspaces/${this.options.workspaceId}/checkpoints/${id}/scene`
+          : `/api/checkpoints/${id}/scene`,
     };
     await atomicJson(path.join(dir, 'scene.json'), scene);
     this.checkpoints.push(checkpoint);
@@ -333,13 +374,16 @@ export class ToolService {
     try {
       const output = path.join(dir, 'scene.png');
       await (this.options.capture ?? capture)(
-        `${this.options.clientUrl}/?checkpoint=${id}`,
+        `${this.options.clientUrl}/?${this.options.workspaceId && this.options.workspaceId !== 'default' ? `workspace=${this.options.workspaceId}&` : ''}checkpoint=${id}`,
         output,
       );
       Object.assign(checkpoint, {
         status: 'complete',
         screenshotPath: output,
-        screenshotUrl: `/artifacts/checkpoints/${id}/scene.png`,
+        screenshotUrl:
+          this.options.workspaceId && this.options.workspaceId !== 'default'
+            ? `/api/workspaces/${this.options.workspaceId}/artifacts/${this.options.runId}/checkpoints/${id}/scene.png`
+            : `/artifacts/checkpoints/${id}/scene.png`,
       });
       await atomicJson(path.join(dir, 'checkpoint.json'), checkpoint);
       return structuredClone(checkpoint);
