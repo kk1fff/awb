@@ -49,7 +49,7 @@ export function Viewport({
     let disposed = false;
     let renderScheduled = false;
     let renderedFrames = 0;
-    let camera: THREE.OrthographicCamera | undefined;
+    let camera: THREE.OrthographicCamera | THREE.PerspectiveCamera | undefined;
     let pointer: { x: number; y: number } | undefined;
     const scheduleRender = () => {
       if (disposed || renderScheduled || !world || !camera) return;
@@ -89,7 +89,10 @@ export function Viewport({
         !captureMode && localView.current?.canonical === canonical
           ? localView.current.camera
           : scene.camera;
-      camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 1000);
+      camera =
+        view.projection === 'perspective'
+          ? new THREE.PerspectiveCamera(view.fov, 1, 0.1, 1000)
+          : new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 1000);
       camera.position.fromArray(view.position);
       camera.lookAt(new THREE.Vector3(...view.target));
       controls = new OrbitControls(camera, renderer.domElement);
@@ -98,18 +101,25 @@ export function Viewport({
       controls.enableDamping = false;
       controls.minZoom = 0.1;
       controls.maxZoom = 20;
+      controls.minDistance = 0.1;
+      controls.maxDistance = 10000;
       controls.update();
       const resize = () => {
+        if (!camera) return;
         const width = element.clientWidth;
         const height = element.clientHeight;
-        const half = view.verticalSize / 2;
         const aspect = width / Math.max(height, 1);
-        Object.assign(camera!, {
-          left: -half * aspect,
-          right: half * aspect,
-          top: half,
-          bottom: -half,
-        });
+        if (camera instanceof THREE.OrthographicCamera) {
+          const half = view.verticalSize / 2;
+          Object.assign(camera, {
+            left: -half * aspect,
+            right: half * aspect,
+            top: half,
+            bottom: -half,
+          });
+        } else {
+          camera.aspect = aspect;
+        }
         camera!.updateProjectionMatrix();
         renderer.setSize(width, height);
         scheduleRender();
@@ -121,7 +131,12 @@ export function Viewport({
         const current = {
           position: camera!.position.toArray(),
           target: controls!.target.toArray(),
-          verticalSize: view.verticalSize / camera!.zoom,
+          verticalSize:
+            camera instanceof THREE.OrthographicCamera
+              ? view.verticalSize / camera.zoom
+              : view.verticalSize,
+          projection: view.projection,
+          fov: view.fov,
         };
         if (!captureMode) localView.current = { canonical, camera: current };
         callbacks.current.onCamera?.(current);

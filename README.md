@@ -97,4 +97,4 @@ See [the MVP verification report](docs/mvp-validation.md) for the checks actuall
 
 ## Limits
 
-One local user, one active scene per process, five opaque primitives, an orthographic camera, flat object hierarchy, and ambient/directional lighting. No grouping, undo, animation, or imported mesh editing. Commands are serialized; screenshot capture briefly queues subsequent tools while read routes remain available. JSON saves and JSONL history are local files, not a transactional database. The MCP bootstrap starts the local app only; it does not install or authenticate the agent CLI.
+One local user, one active scene per process, five opaque primitives, orthographic and perspective cameras (orthographic by default), flat object hierarchy, and ambient/directional lighting. No grouping, undo, animation, or imported mesh editing. Commands are serialized; screenshot capture briefly queues subsequent tools while read routes remain available. JSON saves and JSONL history are local files, not a transactional database. The MCP bootstrap starts the local app only; it does not install or authenticate the agent CLI.

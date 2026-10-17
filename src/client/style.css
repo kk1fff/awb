@@ -508,6 +508,36 @@ h1 > span {
   align-items: center;
   gap: 7px;
 }
+.viewport-toolbar .camera-controls {
+  gap: 8px;
+}
+.camera-controls > label {
+  color: #85907a;
+  font-size: 8px;
+  letter-spacing: 1px;
+}
+.camera-controls > select {
+  width: auto;
+  min-width: 112px;
+  padding: 4px 7px;
+  font-size: 10px;
+  letter-spacing: 0;
+}
+.camera-controls .camera-fov {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.camera-fov > input {
+  width: 74px;
+  padding: 0;
+}
+.camera-fov > output {
+  min-width: 27px;
+  color: #526653;
+  font-size: 9px;
+  letter-spacing: 0;
+}
 .toolbar-separator {
   color: #c5cdbc;
   margin: 0 9px;

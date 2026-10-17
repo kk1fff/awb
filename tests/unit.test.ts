@@ -42,6 +42,23 @@ describe('scene command invariants', () => {
     expect(() => engine.execute('set_camera', { position: before.camera.target })).toThrow();
     expect(engine.snapshot()).toEqual(before);
   });
+  it('defaults legacy camera state to orthographic and validates perspective FOV updates', () => {
+    const engine = new SceneEngine();
+    const legacy = emptyScene();
+    delete (legacy.camera as Partial<typeof legacy.camera>).projection;
+    delete (legacy.camera as Partial<typeof legacy.camera>).fov;
+    const legacyCamera = structuredClone(legacy.camera);
+    engine.load(legacy);
+    expect(engine.snapshot().camera).toEqual({ ...legacyCamera, projection: 'orthographic', fov: 38 });
+
+    const before = engine.snapshot().camera;
+    engine.execute('set_camera', { projection: 'perspective' });
+    engine.execute('set_camera', { fov: 40 });
+    expect(engine.snapshot().camera).toEqual({ ...before, projection: 'perspective', fov: 40 });
+    expect(() => engine.execute('set_camera', { fov: 101 })).toThrow();
+    expect(() => engine.execute('set_camera', { fov: 9 })).toThrow();
+    expect(engine.snapshot().camera.fov).toBe(40);
+  });
   it('loads scene content without rewinding revisions or aliasing input', () => {
     const engine = new SceneEngine();
     const saved = emptyScene();

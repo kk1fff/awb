@@ -56,7 +56,9 @@ export function App() {
   const [reviewText, setReviewText] = useState('');
   const [reviewKind, setReviewKind] = useState<'approval' | 'change_request'>('approval');
   const [comparison, setComparison] = useState<[string, string]>(['', '']);
+  const [cameraFovDraft, setCameraFovDraft] = useState<number>();
   const camera = useRef<CameraState | undefined>(undefined);
+  const pendingFov = useRef<number | undefined>(undefined);
   const mounted = useRef(true);
   const refresh = async () => {
     const [next, log, shots, notes, health] = await Promise.all([
@@ -118,6 +120,9 @@ export function App() {
       stream.close();
     };
   }, []);
+  useEffect(() => {
+    if (scene) setCameraFovDraft(scene.camera.fov);
+  }, [scene?.camera.fov]);
   const command = async (tool: ToolName, args: unknown) => {
     setBusy(true);
     setError('');
@@ -140,6 +145,15 @@ export function App() {
     } finally {
       setBusy(false);
     }
+  };
+  const commitCameraFov = () => {
+    if (!scene || !camera.current) return;
+    const fov = cameraFovDraft ?? scene.camera.fov;
+    if (fov === scene.camera.fov || pendingFov.current === fov) return;
+    pendingFov.current = fov;
+    void command('set_camera', { ...camera.current, fov }).finally(() => {
+      pendingFov.current = undefined;
+    });
   };
   const object = scene?.objects.find((o) => o.id === selected);
   const complete = checkpoints.filter((c) => c.status === 'complete');
@@ -375,9 +389,45 @@ export function App() {
             <div>
               <span className="status-dot" /> LIVE VIEWPORT
             </div>
-            <span>
-              ORTHOGRAPHIC <span className="toolbar-separator">/</span> Y UP
-            </span>
+            <div className="camera-controls">
+              <label htmlFor="camera-projection">CAMERA</label>
+              <select
+                id="camera-projection"
+                aria-label="Camera projection"
+                value={scene?.camera.projection ?? 'orthographic'}
+                disabled={busy || !camera.current}
+                onChange={(event) => {
+                  if (camera.current)
+                    void command('set_camera', {
+                      ...camera.current,
+                      projection: event.target.value as CameraState['projection'],
+                    });
+                }}
+              >
+                <option value="orthographic">Orthographic</option>
+                <option value="perspective">Perspective</option>
+              </select>
+              {scene?.camera.projection === 'perspective' && (
+                <label className="camera-fov">
+                  <span>VERTICAL FOV</span>
+                  <input
+                    aria-label="Vertical field of view"
+                    type="range"
+                    min="10"
+                    max="100"
+                    step="1"
+                    value={cameraFovDraft ?? scene.camera.fov}
+                    disabled={busy || !camera.current}
+                    onChange={(event) => setCameraFovDraft(Number(event.target.value))}
+                    onPointerUp={commitCameraFov}
+                    onKeyUp={commitCameraFov}
+                    onBlur={commitCameraFov}
+                  />
+                  <output>{scene.camera.fov}°</output>
+                </label>
+              )}
+              <span className="toolbar-separator">/</span> Y UP
+            </div>
           </div>
           <div className="viewport-stage">
             {scene && (

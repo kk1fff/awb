@@ -210,6 +210,131 @@ test('local orbit survives object updates and changes the scene camera only when
     .not.toEqual(before.camera.position);
 });
 
+test('orthographic and perspective cameras render the same house and preserve framing controls', async ({
+  page,
+  request,
+}) => {
+  const prior = (await (await request.get('/api/state')).json()) as Scene;
+  for (const object of prior.objects) await tool(request, 'delete_object', { id: object.id });
+
+  const place = async (assetId: string, name: string, position: [number, number, number]) =>
+    tool(request, 'create_object', { name, type: 'asset', assetId, position });
+  await tool(request, 'create_object', {
+    name: 'Garden foreground', type: 'plane', position: [0, -3.2, 0],
+    rotation: [-Math.PI / 2, 0, 0], dimensions: [44, 44, 1], color: '#466143',
+    materialId: 'builtin:forest-floor',
+  });
+  await place('builtin:pnw-craftsman-shell', 'Perspective Craftsman shell', [0, 0, 0]);
+  await place('builtin:pnw-gable-roof', 'Perspective Craftsman roof', [0, 1.8, 0]);
+  await place('builtin:pnw-porch', 'Perspective Craftsman porch', [0, -1.55, -3.55]);
+  await place('builtin:pnw-front-door', 'Perspective entry door', [0, -1.7, -3.12]);
+  await place('builtin:pnw-window', 'Perspective left window', [-2.75, -0.1, -3.12]);
+  await place('builtin:pnw-window', 'Perspective right window', [2.75, -0.1, -3.12]);
+  await place('builtin:pnw-evergreen', 'Perspective fir left', [-8, 0, 2]);
+  await place('builtin:pnw-evergreen', 'Perspective fir right', [8, 0, 2]);
+  await place('builtin:pnw-evergreen', 'Perspective fir background', [-9, 0, -9]);
+  await tool(request, 'set_camera', {
+    position: [10, 2, -23],
+    target: [0, 3.6, 0],
+    verticalSize: 22,
+    projection: 'orthographic',
+    fov: 38,
+  });
+  await tool(request, 'set_lighting', {
+    ambient: { color: '#dbe6e1', intensity: 1.9 },
+    directional: { color: '#fff8ed', intensity: 2.6, position: [-8, 14, -10] },
+    environmentAssetId: 'builtin:pnw-overcast',
+  });
+  await page.goto('/');
+  await page.waitForFunction(() => Boolean(window.__sceneReady));
+  await expect(page.getByLabel('Camera projection')).toHaveValue('orthographic');
+
+  const ortho = (await tool(request, 'render_scene', { label: 'PNW house orthographic camera' })).result as Checkpoint;
+  const orthoPng = await request.get(ortho.screenshotUrl!);
+  expect(ortho.status).toBe('complete');
+  expect(orthoPng.ok()).toBe(true);
+  const orthoBytes = await orthoPng.body();
+  await mkdir('artifacts/tests', { recursive: true });
+  await writeFile('artifacts/tests/pnw-camera-orthographic.png', orthoBytes);
+
+  const beforePerspective = (await (await request.get('/api/state')).json()) as Scene;
+  await page.getByLabel('Camera projection').selectOption('perspective');
+  await expect.poll(async () => ((await (await request.get('/api/state')).json()) as Scene).camera.projection)
+    .toBe('perspective');
+  await expect(page.getByLabel('Vertical field of view')).toHaveValue('38');
+  await page.getByLabel('Vertical field of view').focus();
+  await page.getByLabel('Vertical field of view').press('ArrowRight');
+  await expect.poll(async () => ((await (await request.get('/api/state')).json()) as Scene).camera.fov)
+    .toBe(39);
+  await expect(page.getByLabel('Vertical field of view')).toHaveValue('39');
+  await page.getByLabel('Vertical field of view').focus();
+  await page.getByLabel('Vertical field of view').press('ArrowLeft');
+  await expect.poll(async () => ((await (await request.get('/api/state')).json()) as Scene).camera.fov)
+    .toBe(38);
+  const perspectiveCamera = ((await (await request.get('/api/state')).json()) as Scene).camera;
+  for (let axis = 0; axis < 3; axis++) {
+    expect(perspectiveCamera.position[axis]).toBeCloseTo(beforePerspective.camera.position[axis], 10);
+    expect(perspectiveCamera.target[axis]).toBeCloseTo(beforePerspective.camera.target[axis], 10);
+  }
+  const perspectiveState = (await (await request.get('/api/state')).json()) as Scene;
+  await page.waitForFunction((revision) => window.__sceneReady?.revision === revision, perspectiveState.revision);
+
+  const perspective = (await tool(request, 'render_scene', { label: 'PNW house 38 degree perspective camera' })).result as Checkpoint;
+  const perspectivePng = await request.get(perspective.screenshotUrl!);
+  expect(perspective.status).toBe('complete');
+  expect(perspectivePng.ok()).toBe(true);
+  const perspectiveBytes = await perspectivePng.body();
+  await writeFile('artifacts/tests/pnw-camera-perspective.png', perspectiveBytes);
+  const changedPixels = await page.evaluate(async ([first, second]) => {
+    const decode = async (encoded: string) => {
+      const image = new Image();
+      image.src = `data:image/png;base64,${encoded}`;
+      await image.decode();
+      const canvas = document.createElement('canvas');
+      canvas.width = image.width;
+      canvas.height = image.height;
+      const context = canvas.getContext('2d')!;
+      context.drawImage(image, 0, 0);
+      return context.getImageData(0, 0, canvas.width, canvas.height).data;
+    };
+    const [a, b] = await Promise.all([decode(first), decode(second)]);
+    let changed = 0;
+    for (let i = 0; i < a.length; i += 4) {
+      if (Math.abs(a[i]! - b[i]!) + Math.abs(a[i + 1]! - b[i + 1]!) + Math.abs(a[i + 2]! - b[i + 2]!) > 24)
+        changed++;
+    }
+    return changed / (a.length / 4);
+  }, [orthoBytes.toString('base64'), perspectiveBytes.toString('base64')]);
+  expect(changedPixels, 'projection should change visible scene framing').toBeGreaterThan(0.02);
+
+  const canvas = page.locator('canvas');
+  const oldCanvasBox = await canvas.boundingBox();
+  expect(oldCanvasBox).not.toBeNull();
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await expect.poll(async () => (await canvas.boundingBox())?.width).not.toBe(oldCanvasBox!.width);
+  const resized = await canvas.evaluate((element) => {
+    const view = element as HTMLCanvasElement;
+    return { width: view.width, height: view.height, clientWidth: view.clientWidth, clientHeight: view.clientHeight };
+  });
+  expect(resized.width).toBe(resized.clientWidth);
+  expect(resized.height).toBe(resized.clientHeight);
+  const canvasBox = await canvas.boundingBox();
+  expect(canvasBox).not.toBeNull();
+  await canvas.click({ position: { x: canvasBox!.width / 2, y: canvasBox!.height * 0.7 } });
+  await expect(page.getByLabel('Name', { exact: true })).toHaveValue(/Perspective/);
+  const beforeOrbit = ((await (await request.get('/api/state')).json()) as Scene).camera;
+  await page.mouse.move(canvasBox!.x + canvasBox!.width / 2, canvasBox!.y + canvasBox!.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(canvasBox!.x + canvasBox!.width / 2 + 60, canvasBox!.y + canvasBox!.height / 2 + 20, { steps: 6 });
+  await page.mouse.up();
+  expect(((await (await request.get('/api/state')).json()) as Scene).camera).toEqual(beforeOrbit);
+  await page.getByRole('button', { name: 'Use current view' }).click();
+  await expect.poll(async () => ((await (await request.get('/api/state')).json()) as Scene).camera.position)
+    .not.toEqual(beforeOrbit.position);
+  expect(((await (await request.get('/api/state')).json()) as Scene).camera)
+    .toMatchObject({ projection: 'perspective', fov: 38, verticalSize: 22 });
+});
+
 test('agent can search, build, inspect, correct, save and export a PNW Craftsman house', async ({ page, request }) => {
   const previous = (await (await request.get('/api/state')).json()) as Scene;
   for (const object of previous.objects) await tool(request, 'delete_object', { id: object.id });

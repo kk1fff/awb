@@ -305,6 +305,28 @@ describe('public tool API', () => {
     expect(state.lighting.ambient.color).toBe('#ffffff');
     expect((await call('set_camera', { verticalSize: 12 })).sceneRevision).toBe(7);
   });
+  it('persists partial perspective camera updates and rejects invalid FOV', async () => {
+    const initial = await get<Scene>('/api/state');
+    const projection = await call('set_camera', { projection: 'perspective' });
+    expect(projection.success).toBe(true);
+    const fov = await call('set_camera', { fov: 38 });
+    expect(fov.success).toBe(true);
+    expect(fov.sceneRevision).toBe(2);
+    const camera = (await get<Scene>('/api/state')).camera;
+    expect(camera).toEqual({ ...initial.camera, projection: 'perspective', fov: 38 });
+    const invalid = await call('set_camera', { fov: 101 });
+    expect(invalid.success).toBe(false);
+    expect((await get<Scene>('/api/state')).camera).toEqual(camera);
+
+    await call('save_scene', { name: 'perspective-camera' });
+    const fresh = await createApp({ ...service.options, runId: 'perspective-camera-fresh' });
+    const loaded = await fresh.service.execute({
+      tool: 'load_scene',
+      arguments: { name: 'perspective-camera' },
+    });
+    expect(loaded.success).toBe(true);
+    expect(fresh.service.engine.snapshot().camera).toEqual(camera);
+  });
   it('saves with provenance and loads content into a fresh server session', async () => {
     await call('create_object', { name: 'Bench', type: 'box', dimensions: [3, 0.2, 1] });
     const expected = await get<Scene>('/api/state');

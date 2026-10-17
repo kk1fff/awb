@@ -65,6 +65,9 @@ export const cameraSchema = z
     position: vector,
     target: vector,
     verticalSize: z.number().positive().max(10000),
+    // verticalSize only affects orthographic projection; fov only affects perspective.
+    projection: z.enum(['orthographic', 'perspective']).default('orthographic'),
+    fov: z.number().min(10).max(100).default(38),
   })
   .strict()
   .refine((c) => c.position.some((v, i) => v !== c.target[i]), {
@@ -111,6 +114,8 @@ export const toolSchemas = {
       position: vector.optional(),
       target: vector.optional(),
       verticalSize: z.number().positive().max(10000).optional(),
+      projection: z.enum(['orthographic', 'perspective']).optional(),
+      fov: z.number().min(10).max(100).optional(),
     })
     .strict(),
   set_lighting: z
@@ -198,7 +203,13 @@ export function emptyScene(): Scene {
     schemaVersion: 2,
     revision: 0,
     objects: [],
-    camera: { position: [12, 12, 12], target: [0, 0, 0], verticalSize: 15 },
+    camera: {
+      position: [12, 12, 12],
+      target: [0, 0, 0],
+      verticalSize: 15,
+      projection: 'orthographic',
+      fov: 38,
+    },
     lighting: {
       ambient: { color: '#ffffff', intensity: 1.5 },
       directional: { color: '#fff4dc', intensity: 3, position: [8, 14, 5] },
