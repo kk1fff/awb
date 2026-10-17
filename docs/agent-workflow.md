@@ -2,6 +2,8 @@
 
 Start Codex, Claude Code, or OpenCode from the repository root and give it a task. Their checked-in project configuration exposes the `fieldwork` MCP tools. On a fresh clone, the bootstrap installs project dependencies and Playwright Chromium, starts the local API and browser app, and opens the workspace. The browser receives live scene and activity updates over server-sent events.
 
+For the persistent designer instructions supplied during MCP initialization, see [`designer-agent-bootstrap.md`](designer-agent-bootstrap.md); API-only agents can fetch the same guide from `GET /api/instructions`.
+
 ## Choose a mode from the request
 
 - **Scene mode:** requests to create, edit, inspect, save, or export a world. Use only public scene tools for scene changes. Render and inspect a checkpoint before evaluating visual quality; make evidence-based corrections where needed.

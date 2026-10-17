@@ -1,4 +1,5 @@
 import express, { type ErrorRequestHandler, type Router } from 'express';
+import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
 import { toolSchemas } from '../shared/schema.js';
@@ -136,6 +137,15 @@ export async function createApp(options: ServiceOptions & { clientDir?: string }
   const app = express();
   app.disable('x-powered-by');
   app.use(express.json({ limit: '1mb' }));
+
+  app.get('/api/instructions', async (_req, res, next) => {
+    try {
+      const guide = await readFile(path.resolve(process.cwd(), 'docs/designer-agent-bootstrap.md'));
+      res.type('text/markdown').send(guide);
+    } catch (error) {
+      next(error);
+    }
+  });
 
   app.get('/api/workspaces', async (_req, res, next) => {
     try {

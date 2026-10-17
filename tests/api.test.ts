@@ -4,7 +4,10 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { createApp } from '../src/server/app.js';
+import { createFieldworkMcpServer, fieldworkInstructions } from '../src/server/mcp-server.js';
 import type { ToolService } from '../src/server/service.js';
 import type {
   Checkpoint,
@@ -71,6 +74,35 @@ afterEach(async () => {
 });
 
 describe('public tool API', () => {
+  it('serves the canonical designer guide and advertises concise MCP bootstrap instructions', async () => {
+    const guide = await readFile(path.resolve(process.cwd(), 'docs/designer-agent-bootstrap.md'));
+    const response = await fetch(`${base}/api/instructions`);
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')).toContain('text/markdown');
+    expect(Buffer.from(await response.arrayBuffer())).toEqual(guide);
+    for (const phrase of [
+      'host agent runtime',
+      'one workspace per specialist',
+      'Promote explicitly',
+      'photographic plausibility',
+    ])
+      expect(guide.toString()).toContain(phrase);
+
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const mcpServer = createFieldworkMcpServer({ api: base });
+    const client = new Client({ name: 'bootstrap-test', version: '1.0.0' });
+    try {
+      await mcpServer.connect(serverTransport);
+      await client.connect(clientTransport);
+      expect(client.getInstructions()).toBe(fieldworkInstructions);
+      expect(client.getInstructions()).toContain('docs/designer-agent-bootstrap.md');
+      expect(client.getInstructions()).toContain('fresh scene');
+    } finally {
+      await client.close();
+      await mcpServer.close();
+    }
+  });
+
   it('discovers every tool and exercises create, inspect, list, patch and delete', async () => {
     const docs = await get<{ tools: Record<string, unknown> }>('/api/tools');
     expect(Object.keys(docs.tools)).toHaveLength(14);
