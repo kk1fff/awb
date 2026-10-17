@@ -75,6 +75,7 @@ export const toolSchemas = {
     })
     .strict(),
   render_scene: z.object({ label: z.string().trim().min(1).max(120).optional() }).strict(),
+  export_scene: z.object({}).strict(),
   save_scene: z.object({ name: saveName }).strict(),
   load_scene: z.object({ name: saveName }).strict(),
   record_review: z
@@ -136,6 +137,14 @@ export interface Checkpoint {
   screenshotPath?: string;
   sceneUrl: string;
   error?: string;
+}
+export interface SceneExport {
+  format: 'glb';
+  fileName: string;
+  artifactUrl: string;
+  sceneRevision: number;
+  objectCount: number;
+  bytes: number;
 }
 export function emptyScene(): Scene {
   return {

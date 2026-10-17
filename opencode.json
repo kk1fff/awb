@@ -1,0 +1,12 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "instructions": ["AGENTS.md"],
+  "mcp": {
+    "fieldwork": {
+      "type": "local",
+      "command": ["node", "scripts/mcp-bootstrap.mjs"],
+      "enabled": true,
+      "timeout": 180000
+    }
+  }
+}

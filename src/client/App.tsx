@@ -8,6 +8,7 @@ import type {
   ToolEvent,
   ToolName,
   ToolResponse,
+  SceneExport,
 } from '../shared/schema.js';
 import { Viewport } from './Viewport.js';
 
@@ -34,6 +35,7 @@ export function App() {
   const [selected, setSelected] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const [pendingTools, setPendingTools] = useState<{ executionId: string; tool: string }[]>([]);
   const [tab, setTab] = useState<'activity' | 'checkpoints' | 'feedback'>('activity');
   const [saveName, setSaveName] = useState('garden');
   const [reviewCheckpoint, setReviewCheckpoint] = useState('');
@@ -59,23 +61,47 @@ export function App() {
   };
   useEffect(() => {
     mounted.current = true;
-    let pending = false;
-    const poll = async () => {
-      if (pending) return;
-      pending = true;
-      try {
-        await refresh();
-      } catch (e) {
+    const stream = new EventSource('/api/stream');
+    stream.addEventListener('snapshot', (event) => {
+      const snapshot = JSON.parse((event as MessageEvent).data) as {
+        runId: string;
+        scene: Scene;
+        events: ToolEvent[];
+        checkpoints: Checkpoint[];
+        reviews: Review[];
+      };
+      setRunId(snapshot.runId);
+      setScene(snapshot.scene);
+      setEvents(snapshot.events);
+      setCheckpoints(snapshot.checkpoints);
+      setReviews(snapshot.reviews);
+      setPendingTools([]);
+    });
+    stream.addEventListener('tool-start', (event) => {
+      const message = JSON.parse((event as MessageEvent).data) as {
+        executionId: string;
+        tool: string;
+      };
+      setPendingTools((current) => [
+        ...current.filter((item) => item.executionId !== message.executionId),
+        message,
+      ]);
+    });
+    stream.addEventListener('update', (event) => {
+      const message = JSON.parse((event as MessageEvent).data) as { executionId: string };
+      setPendingTools((current) =>
+        current.filter((item) => item.executionId !== message.executionId),
+      );
+      void refresh().catch((e) => {
         if (mounted.current) setError(String(e));
-      } finally {
-        pending = false;
-      }
+      });
+    });
+    stream.onerror = () => {
+      // EventSource reconnects automatically; a fresh snapshot restores any missed updates.
     };
-    void poll();
-    const timer = setInterval(() => void poll(), 1000);
     return () => {
       mounted.current = false;
-      clearInterval(timer);
+      stream.close();
     };
   }, []);
   const command = async (tool: ToolName, args: unknown) => {
@@ -103,6 +129,15 @@ export function App() {
   };
   const object = scene?.objects.find((o) => o.id === selected);
   const complete = checkpoints.filter((c) => c.status === 'complete');
+  const exportGlb = async () => {
+    const response = await command('export_scene', {});
+    const exported = response?.result as SceneExport | undefined;
+    if (!exported) return;
+    const link = document.createElement('a');
+    link.href = exported.artifactUrl;
+    link.download = exported.fileName;
+    link.click();
+  };
   return (
     <div className="studio">
       <header className="topbar">
@@ -132,6 +167,9 @@ export function App() {
           <p className="subtitle">Built by an agent. Open to your perspective.</p>
         </div>
         <div className="workspace-actions">
+          <button disabled={busy || !scene} onClick={() => void exportGlb()}>
+            ↓ Export GLB
+          </button>
           <button
             disabled={busy}
             onClick={() =>
@@ -296,6 +334,11 @@ export function App() {
         </div>
         {tab === 'activity' && (
           <div className="event-list">
+            {pendingTools.map((operation) => (
+              <div className="pending-tool" role="status" key={operation.executionId}>
+                <span className="status-dot" /> Agent is running <strong>{operation.tool}</strong>…
+              </div>
+            ))}
             {events.length ? (
               [...events].reverse().map((event) => (
                 <details key={event.executionId} className="event">

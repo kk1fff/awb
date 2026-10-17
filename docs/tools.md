@@ -2,7 +2,7 @@
 
 Submit `POST /api/tools` with JSON `{ "tool": "create_object", "arguments": { ... } }`. The maximum request body is 1 MB. Responses always include `success`, a server-generated `executionId`, `sceneRevision`, and either `result` or `error: { code, message, details? }`. Semantic validation failures return HTTP 400; other tool failures return 422. The CLI prints the same envelope and exits nonzero on failure.
 
-Fetch `GET /api/tools` for complete JSON schemas, including validation limits. `GET /api/health` reports run ID and tool version. Read endpoints are `/api/state`, `/api/events`, `/api/checkpoints`, `/api/reviews`, and `/api/checkpoints/<id>/scene`. Reads outside the tool endpoint do not create tool events.
+Fetch `GET /api/tools` for complete JSON schemas, including validation limits. `GET /api/health` reports run ID and tool version. Read endpoints are `/api/state`, `/api/events`, `/api/checkpoints`, `/api/reviews`, and `/api/checkpoints/<id>/scene`. `GET /api/stream` is a server-sent event stream with an initial snapshot, tool-start notifications, and updates; clients reconnecting receive a fresh snapshot. Reads outside the tool endpoint do not create tool events.
 
 ## Coordinates and defaults
 
@@ -16,21 +16,22 @@ Lighting defaults: ambient `{color:"#ffffff",intensity:1.5}`, directional `{colo
 
 ## Operations
 
-| Tool             | Arguments                                                                                 | Result                                                             |
-| ---------------- | ----------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
-| `create_object`  | Required `name`, `type`: box/sphere/cylinder/cone/plane; optional object properties above | Complete object with UUID                                          |
-| `update_object`  | Required `id`; any subset of name, position, rotation, dimensions, scale, color, visible  | Updated complete object                                            |
-| `delete_object`  | `id`                                                                                      | Deleted ID                                                         |
-| `list_objects`   | `{}`                                                                                      | Array of complete object records                                   |
-| `inspect_object` | `id`                                                                                      | Complete object record                                             |
-| `set_camera`     | Any subset of position, target, verticalSize                                              | Complete canonical camera                                          |
-| `set_lighting`   | Partial ambient and/or directional objects; nested fields merge                           | Complete lighting                                                  |
-| `render_scene`   | Optional `label`                                                                          | Complete checkpoint metadata, PNG path/URL, snapshot URL, revision |
-| `save_scene`     | `name`                                                                                    | Save name, absolute file path, execution ID, revision              |
-| `load_scene`     | `name`                                                                                    | Loaded scene with new active revision                              |
-| `record_review`  | See below                                                                                 | Persisted review                                                   |
+| Tool             | Arguments                                                                                 | Result                                                                       |
+| ---------------- | ----------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| `create_object`  | Required `name`, `type`: box/sphere/cylinder/cone/plane; optional object properties above | Complete object with UUID                                                    |
+| `update_object`  | Required `id`; any subset of name, position, rotation, dimensions, scale, color, visible  | Updated complete object                                                      |
+| `delete_object`  | `id`                                                                                      | Deleted ID                                                                   |
+| `list_objects`   | `{}`                                                                                      | Array of complete object records                                             |
+| `inspect_object` | `id`                                                                                      | Complete object record                                                       |
+| `set_camera`     | Any subset of position, target, verticalSize                                              | Complete canonical camera                                                    |
+| `set_lighting`   | Partial ambient and/or directional objects; nested fields merge                           | Complete lighting                                                            |
+| `render_scene`   | Optional `label`                                                                          | Complete checkpoint metadata, PNG path/URL, snapshot URL, revision           |
+| `export_scene`   | `{}`                                                                                      | GLB file name, artifact URL, scene revision, visible object count, byte size |
+| `save_scene`     | `name`                                                                                    | Save name, absolute file path, execution ID, revision                        |
+| `load_scene`     | `name`                                                                                    | Loaded scene with new active revision                                        |
+| `record_review`  | See below                                                                                 | Persisted review                                                             |
 
-All input objects reject unknown fields. Patch arrays replace whole triples. IDs/types cannot be changed by update. Scene mutations (create/update/delete/camera/lighting/load) increment revision once on success, even if values are unchanged. Read/save/render/review commands preserve revision. Failed commands preserve scene state and revision. This distinction clarifies “accepted command” in the original proposal: only accepted scene mutations advance scene revision.
+All input objects reject unknown fields. Patch arrays replace whole triples. IDs/types cannot be changed by update. Scene mutations (create/update/delete/camera/lighting/load) increment revision once on success, even if values are unchanged. Read/save/render/export/review commands preserve revision. Failed commands preserve scene state and revision. The browser receives live updates while a command runs and after its result is recorded.
 
 Saves use schemaVersion `1`; unsupported versions fail explicitly. Save names are 1–80 characters, starting with an alphanumeric character and containing only alphanumeric characters, underscores, and hyphens. Saving the same name replaces that named save atomically; immutable run provenance remains. Loading validates the whole file, including unique IDs, preserves content/IDs, and assigns `current revision + 1` rather than restoring the saved revision. There is no automatic schema migration.
 
@@ -39,6 +40,10 @@ Saves use schemaVersion `1`; unsupported versions fail explicitly. Save names ar
 `render_scene` first preserves an immutable scene JSON under the run's checkpoint directory. Playwright loads that exact snapshot at 1024 × 768, device scale 1, waits for the renderer's readiness signal, and captures only the canvas. Readiness is signaled after two rendered frames. The checkpoint revision remains valid after later edits. Compare it to `/api/state` to identify stale images.
 
 On success, result fields include `id`, `label`, `executionId`, `sceneRevision`, `timestamp`, `status:"complete"`, `screenshotPath`, `screenshotUrl`, and `sceneUrl`. PNG paths are local to the server; URLs are relative to the app origin. On failure the API returns `RENDER_FAILED` with checkpoint ID and diagnostics; its snapshot and failed metadata remain available, without a successful screenshot URL.
+
+## GLB export
+
+`export_scene` writes a binary glTF 2.0 (`.glb`) file under the current run's `exports/` directory. It exports visible scene meshes, transforms, and material colors from the current scene revision. The result includes `format`, `fileName`, `artifactUrl`, `sceneRevision`, `objectCount`, and `bytes`. Exports are immutable run artifacts; the browser's **Export GLB** button triggers the same public tool and downloads its file.
 
 ## Evaluations and tool feedback
 
@@ -78,7 +83,7 @@ Example tool feedback:
 }
 ```
 
-Feedback appears in the human UI and generates per-run `tool-feedback.md`. The MVP never modifies its own tool implementation in response to feedback.
+Feedback appears in the human UI and generates per-run `tool-feedback.md`. Tool feedback is evidence for a later tool-mode request; it does not silently change the application during scene mode.
 
 ## CLI and errors
 

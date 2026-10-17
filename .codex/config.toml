@@ -1,0 +1,4 @@
+[mcp_servers.fieldwork]
+command = "node"
+args = ["scripts/mcp-bootstrap.mjs"]
+startup_timeout_sec = 180

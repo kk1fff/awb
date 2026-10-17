@@ -60,7 +60,7 @@ afterEach(async () => {
 describe('public tool API', () => {
   it('discovers every tool and exercises create, inspect, list, patch and delete', async () => {
     const docs = await get<{ tools: Record<string, unknown> }>('/api/tools');
-    expect(Object.keys(docs.tools)).toHaveLength(11);
+    expect(Object.keys(docs.tools)).toHaveLength(12);
     const created = await call('create_object', {
       name: 'Tree',
       type: 'cylinder',
@@ -106,6 +106,78 @@ describe('public tool API', () => {
     expect(await get('/api/state')).toEqual(before);
     expect((await call('surprise')).error?.code).toBe('UNKNOWN_TOOL');
     expect((await call('toString')).error?.code).toBe('UNKNOWN_TOOL');
+  });
+  it('exports only visible scene meshes as a revision-linked GLB artifact', async () => {
+    await call('create_object', {
+      name: 'Visible stone',
+      type: 'sphere',
+      position: [2, 1, -3],
+      color: '#336699',
+    });
+    await call('create_object', { name: 'Hidden stone', type: 'box', visible: false });
+    const exported = await call('export_scene');
+    expect(exported.success).toBe(true);
+    expect(exported.sceneRevision).toBe(2);
+    const result = exported.result as {
+      format: string;
+      artifactUrl: string;
+      sceneRevision: number;
+      objectCount: number;
+      bytes: number;
+    };
+    expect(result).toMatchObject({ format: 'glb', sceneRevision: 2, objectCount: 1 });
+    const response = await fetch(`${base}${result.artifactUrl}`);
+    expect(response.headers.get('content-type')).toContain('model/gltf-binary');
+    const bytes = Buffer.from(await response.arrayBuffer());
+    expect(bytes.subarray(0, 4).toString()).toBe('glTF');
+    expect(bytes.readUInt32LE(4)).toBe(2);
+    expect(bytes.readUInt32LE(8)).toBe(bytes.length);
+    expect(bytes.length).toBe(result.bytes);
+    const jsonLength = bytes.readUInt32LE(12);
+    const document = JSON.parse(bytes.subarray(20, 20 + jsonLength).toString()) as {
+      nodes: { name?: string; mesh?: number }[];
+      meshes: unknown[];
+      materials: { pbrMetallicRoughness: { baseColorFactor: number[] } }[];
+    };
+    expect(document.nodes.map((node) => node.name)).toContain('Visible stone');
+    expect(document.nodes.map((node) => node.name)).not.toContain('Hidden stone');
+    expect(document.meshes).toHaveLength(1);
+    expect(document.materials[0].pbrMetallicRoughness.baseColorFactor).toEqual([
+      expect.closeTo(0.0331, 3),
+      expect.closeTo(0.1329, 3),
+      expect.closeTo(0.3185, 3),
+      1,
+    ]);
+  });
+  it('streams an initial snapshot, running tool action, and completion update', async () => {
+    const response = await fetch(`${base}/api/stream`);
+    expect(response.headers.get('content-type')).toContain('text/event-stream');
+    const reader = response.body!.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    const nextEvent = async (name: string) => {
+      while (true) {
+        const boundary = buffer.indexOf('\n\n');
+        if (boundary >= 0) {
+          const block = buffer.slice(0, boundary);
+          buffer = buffer.slice(boundary + 2);
+          if (block.startsWith(`event: ${name}\n`)) return block;
+          continue;
+        }
+        const chunk = await reader.read();
+        if (chunk.done) throw new Error(`Stream closed before ${name}`);
+        buffer += decoder.decode(chunk.value, { stream: true });
+      }
+    };
+    try {
+      expect(await nextEvent('snapshot')).toContain('"runId":"test"');
+      const action = call('create_object', { name: 'Live action', type: 'box' });
+      expect(await nextEvent('tool-start')).toContain('"tool":"create_object"');
+      await action;
+      expect(await nextEvent('update')).toContain('"sceneRevision":1');
+    } finally {
+      await reader.cancel();
+    }
   });
   it('serializes concurrent mutations and merges partial lighting', async () => {
     const results = await Promise.all(

@@ -1,3 +1,4 @@
+import { readFile } from 'node:fs/promises';
 import { expect, test, type APIRequestContext } from '@playwright/test';
 import type { Checkpoint, Scene, SceneObject, ToolResponse } from '../../src/shared/schema.js';
 
@@ -32,6 +33,35 @@ test('@smoke renders a public-API object in Linux Chromium with no browser error
     .toContain((created.result as SceneObject).id);
   await page.screenshot({ path: 'artifacts/tests/studio-smoke.png', fullPage: true });
   expect(errors).toEqual([]);
+});
+test('live browser observes an agent edit and downloads a GLB export', async ({
+  page,
+  request,
+}) => {
+  await page.goto('/');
+  await expect(page.getByRole('heading', { name: 'A world in the making.' })).toBeVisible();
+  const baseline = (await (await request.get('/api/state')).json()) as Scene;
+  await expect(page.getByTestId('revision')).toHaveText(String(baseline.revision).padStart(3, '0'));
+  const created = await tool(request, 'create_object', {
+    name: 'Live export tree',
+    type: 'cone',
+    position: [1, 1, 2],
+    color: '#3a7744',
+  });
+  await expect(page.getByRole('button', { name: '△ Live export tree' })).toBeVisible();
+  await expect(page.getByTestId('revision')).toHaveText(
+    String(baseline.revision + 1).padStart(3, '0'),
+  );
+  await expect(page.getByText('create_object', { exact: true }).first()).toBeVisible();
+
+  const downloadReady = page.waitForEvent('download');
+  await page.getByRole('button', { name: /Export GLB/ }).click();
+  const download = await downloadReady;
+  expect(download.suggestedFilename()).toMatch(/^scene-.+\.glb$/);
+  const file = await download.path();
+  expect(file).toBeTruthy();
+  expect((await readFile(file!)).subarray(0, 4).toString()).toBe('glTF');
+  expect((created.result as SceneObject).name).toBe('Live export tree');
 });
 test('human edits, render snapshots, comparisons and checkpoint reviews use public tools', async ({
   page,
@@ -82,7 +112,7 @@ test('human edits, render snapshots, comparisons and checkpoint reviews use publ
     .fill('Approved after comparing the two views.');
   await page.getByRole('button', { name: 'Record feedback' }).click();
   await expect(
-    page.getByText('Approved after comparing the two views.', { exact: true }),
+    page.locator('.reviews').getByText('Approved after comparing the two views.', { exact: true }),
   ).toBeVisible();
   await page.screenshot({ path: 'artifacts/tests/studio-reviewed.png', fullPage: true });
   const frozen = (await (await request.get(before.sceneUrl)).json()) as Scene;

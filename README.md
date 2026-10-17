@@ -2,9 +2,21 @@
 
 A local 3D workspace for an external AI agent to create, render, inspect, and revise scenes. Humans see the same scene, inspect objects, compare immutable checkpoints, and record feedback.
 
-## Run
+## Start with an agent
 
-Requires Node.js 22.12+ and npm. Install the matched browser once:
+After cloning, launch one of the supported agents from the project folder and give it a task:
+
+```bash
+codex
+# or: claude
+# or: opencode
+```
+
+On first connection, the project's MCP bootstrap installs npm dependencies and Playwright Chromium if needed, starts the local app, and opens **http://127.0.0.1:5173**. The browser shows the scene and the agent's actions live. Requires Node.js 22.12+, npm, and the selected agent CLI already installed and signed in. If Chromium reports missing Linux libraries, install them with `npx playwright install --with-deps chromium`.
+
+The agent chooses between two modes from your request: build or edit a scene through the public tools, or improve the application/interface when you ask for that. It asks a brief clarification if the requested mode or outcome is unclear. Project-specific MCP setup is checked in for Codex, Claude Code, and OpenCode.
+
+To run the app without an agent, install dependencies and start the development servers directly:
 
 ```bash
 npm ci
@@ -12,7 +24,7 @@ npx playwright install chromium
 npm run dev
 ```
 
-Open **http://127.0.0.1:5173**. The tool API listens at **http://127.0.0.1:3001**. On a minimal Linux host, install browser OS dependencies using `npx playwright install --with-deps chromium` if browser startup reports missing libraries.
+Open **http://127.0.0.1:5173**. The tool API listens at **http://127.0.0.1:3001**.
 
 Production-style local launch:
 
@@ -23,9 +35,9 @@ npm start
 
 Then open http://127.0.0.1:3001. No model credentials are needed. The application binds to localhost and has no authentication; it is intended for local use.
 
-## Give this to your coding agent
+## Agent tools
 
-Read [the tool contract](docs/tools.md) and [agent workflow](docs/agent-workflow.md). Discover machine-readable schemas with `GET /api/tools`. Manipulate scenes only through these tools; do not edit scene JSON or renderer source to create the scene.
+The `fieldwork` MCP server exposes the same validated tools as the HTTP API. The tool contract and workflow are documented in [the tool guide](docs/tools.md) and [agent workflow](docs/agent-workflow.md). Scene-building agents must use public tools rather than editing scene JSON or renderer source.
 
 ```bash
 npm run --silent tool -- create_object '{"name":"tree_trunk","type":"cylinder","position":[2,1,0],"dimensions":[0.3,2,0.3],"color":"#795548"}'
@@ -33,7 +45,7 @@ npm run --silent tool -- list_objects '{}'
 npm run --silent tool -- render_scene '{"label":"First observation"}'
 ```
 
-Open the returned `screenshotPath` with your agent's image viewer. Diagnose the image, use `update_object` or camera/lighting tools, rerender, and record your assessment with `record_review`. HTTP is the authoritative interface; the CLI is a thin wrapper. Set `SCENE_API` to change its base URL.
+`render_scene` returns a PNG checkpoint for inspection. `export_scene` writes a `.glb` containing visible scene meshes and materials and returns its artifact URL, file name, and revision. The browser's **Export GLB** action downloads the same artifact. HTTP remains the authoritative interface; the CLI is a thin wrapper. Set `SCENE_API` to change its base URL.
 
 For a repeatable starting construction on a **fresh scene**:
 
@@ -85,4 +97,4 @@ See [the MVP verification report](docs/mvp-validation.md) for the checks actuall
 
 ## Limits
 
-One local user, one active scene per process, five opaque primitives, an orthographic camera, flat object hierarchy, and ambient/directional lighting. No grouping, undo, animation, imported meshes, automatic tool changes, or embedded agent runner. Commands are serialized; screenshot capture briefly queues subsequent tools while read routes remain available. JSON saves and JSONL history are local files, not a transactional database.
+One local user, one active scene per process, five opaque primitives, an orthographic camera, flat object hierarchy, and ambient/directional lighting. No grouping, undo, animation, or imported mesh editing. Commands are serialized; screenshot capture briefly queues subsequent tools while read routes remain available. JSON saves and JSONL history are local files, not a transactional database. The MCP bootstrap starts the local app only; it does not install or authenticate the agent CLI.

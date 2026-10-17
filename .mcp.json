@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "fieldwork": {
+      "command": "node",
+      "args": ["scripts/mcp-bootstrap.mjs"],
+      "timeout": 180000
+    }
+  }
+}

@@ -26,6 +26,30 @@ export async function createApp(options: ServiceOptions & { clientDir?: string }
   app.get('/api/events', (_req, res) => res.json(service.events));
   app.get('/api/reviews', (_req, res) => res.json(service.reviews));
   app.get('/api/checkpoints', (_req, res) => res.json(service.checkpoints));
+  app.get('/api/stream', (req, res) => {
+    res.status(200).set({
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache, no-transform',
+      Connection: 'keep-alive',
+      'X-Accel-Buffering': 'no',
+    });
+    res.flushHeaders();
+    const send = (event: string, data: unknown) =>
+      res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+    const unsubscribe = service.subscribe((message) => send(message.type, message));
+    send('snapshot', {
+      runId: options.runId,
+      scene: service.engine.snapshot(),
+      events: service.events,
+      checkpoints: service.checkpoints,
+      reviews: service.reviews,
+    });
+    const heartbeat = setInterval(() => res.write(': keep-alive\n\n'), 20_000);
+    req.on('close', () => {
+      clearInterval(heartbeat);
+      unsubscribe();
+    });
+  });
   app.get('/api/checkpoints/:id/scene', (req, res) => {
     const checkpoint = service.checkpoints.find((c) => c.id === req.params.id);
     if (!checkpoint) {

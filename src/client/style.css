@@ -622,6 +622,22 @@ h1 > span {
   overflow: auto;
   min-height: 130px;
 }
+.pending-tool {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 21px;
+  border-bottom: 1px solid #f0f2eb;
+  color: #6f7f68;
+  font-size: 10px;
+}
+.pending-tool .status-dot {
+  width: 6px;
+  height: 6px;
+}
+.pending-tool strong {
+  color: #425c3a;
+}
 .event {
   border-bottom: 1px solid #f0f2eb;
 }

@@ -12,6 +12,15 @@ import {
   type ToolResponse,
 } from '../shared/schema.js';
 import { capture, type Capture } from './capture.js';
+import { exportScene } from './export.js';
+
+export interface LiveMessage {
+  type: 'tool-start' | 'update';
+  executionId?: string;
+  tool?: string;
+  sceneRevision: number;
+  event?: ToolEvent;
+}
 
 export interface ServiceOptions {
   dataDir: string;
@@ -33,6 +42,7 @@ export class ToolService {
   readonly checkpoints: Checkpoint[] = [];
   readonly reviews: Review[] = [];
   readonly runDir: string;
+  private listeners = new Set<(message: LiveMessage) => void>();
   private queue: Promise<unknown> = Promise.resolve();
   constructor(readonly options: ServiceOptions) {
     if (!/^[a-zA-Z0-9][\w-]{0,99}$/.test(options.runId)) throw new Error('Invalid RUN_ID');
@@ -51,6 +61,19 @@ export class ToolService {
     await mkdir(path.join(this.runDir, 'checkpoints'));
     await writeFile(path.join(this.runDir, 'events.jsonl'), '');
     await writeFile(path.join(this.runDir, 'reviews.jsonl'), '');
+  }
+  subscribe(listener: (message: LiveMessage) => void): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+  private publish(message: LiveMessage): void {
+    for (const listener of this.listeners) {
+      try {
+        listener(message);
+      } catch (error) {
+        console.error('Cannot notify a live workspace client', error);
+      }
+    }
   }
   execute(input: unknown, rejection?: ToolError): Promise<ToolResponse> {
     const next = this.queue.then(() => this.run(input, rejection));
@@ -75,6 +98,12 @@ export class ToolService {
           `Unknown tool '${tool}'. Fetch GET /api/tools for supported operations.`,
         );
       const validated = toolSchemas[tool as ToolName].parse(args) as Record<string, unknown>;
+      this.publish({
+        type: 'tool-start',
+        executionId,
+        tool,
+        sceneRevision: this.engine.snapshot().revision,
+      });
       const result = await this.dispatch(tool as ToolName, validated, executionId, timestamp);
       response = {
         success: true,
@@ -123,6 +152,7 @@ export class ToolService {
     } catch (error) {
       this.engine.restore(previous);
       console.error('Cannot record execution event', error);
+      this.publish({ type: 'update', executionId, sceneRevision: previous.revision });
       return {
         success: false,
         executionId,
@@ -134,6 +164,7 @@ export class ToolService {
         },
       };
     }
+    this.publish({ type: 'update', executionId, sceneRevision: response.sceneRevision });
     return response;
   }
   private async dispatch(
@@ -181,6 +212,8 @@ export class ToolService {
     }
     if (tool === 'render_scene')
       return this.render(args.label as string | undefined, executionId, timestamp);
+    if (tool === 'export_scene')
+      return exportScene(this.engine.snapshot(), this.runDir, executionId);
     if (tool === 'record_review') {
       const review = {
         ...args,
