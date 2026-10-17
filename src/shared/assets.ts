@@ -1,0 +1,25 @@
+import { assetRecordSchema, type AssetRecord } from './schema.js';
+
+const definitions: AssetRecord[] = [
+  { id: 'builtin:pnw-craftsman-shell', name: 'Craftsman house shell', description: 'Timbered single-family house body with gabled front and rear walls.', kind: 'model', tags: ['house', 'craftsman', 'pnw', 'architecture', 'siding'], source: 'builtin', format: 'procedural', bounds: [8, 6.6, 6.2] },
+  { id: 'builtin:pnw-gable-roof', name: 'Craftsman gable roof', description: 'Steep cedar-shingle roof with deep eaves and exposed fascia.', kind: 'model', tags: ['house', 'craftsman', 'pnw', 'roof', 'shingle'], source: 'builtin', format: 'procedural', bounds: [9, 3.4, 7] },
+  { id: 'builtin:pnw-porch', name: 'Craftsman covered porch', description: 'Raised front porch with timber posts, rail, steps, and beam.', kind: 'model', tags: ['house', 'craftsman', 'pnw', 'porch', 'wood'], source: 'builtin', format: 'procedural', bounds: [4.7, 4.2, 2.35] },
+  { id: 'builtin:pnw-window', name: 'Craftsman divided-light window', description: 'Timber frame, reflective glass, and divided upper lights.', kind: 'model', tags: ['house', 'window', 'glass', 'craftsman'], source: 'builtin', format: 'procedural', bounds: [1.4, 1.8, 0.2] },
+  { id: 'builtin:pnw-front-door', name: 'Craftsman front door', description: 'Recessed timber door with glazed upper panel and hardware.', kind: 'model', tags: ['house', 'door', 'wood', 'craftsman'], source: 'builtin', format: 'procedural', bounds: [1.2, 2.2, 0.16] },
+  { id: 'builtin:pnw-evergreen', name: 'Douglas fir', description: 'Layered evergreen tree with a tapered crown and visible trunk.', kind: 'model', tags: ['pnw', 'tree', 'evergreen', 'douglas fir', 'landscape'], source: 'builtin', format: 'procedural', bounds: [3.8, 9, 3.8] },
+  { id: 'builtin:pnw-fern', name: 'Sword fern', description: 'Low Pacific Northwest fern with radiating fronds.', kind: 'model', tags: ['pnw', 'fern', 'plant', 'landscape'], source: 'builtin', format: 'procedural', bounds: [1.8, 0.8, 1.8] },
+  { id: 'builtin:pnw-stone-path', name: 'Irregular stone path', description: 'Cluster of weathered flat stepping stones.', kind: 'model', tags: ['pnw', 'stone', 'path', 'landscape'], source: 'builtin', format: 'procedural', bounds: [2.2, 0.18, 1.1] },
+  { id: 'builtin:pnw-boulder', name: 'Mossy boulder', description: 'Rounded Northwest fieldstone with a moss-colored top.', kind: 'model', tags: ['pnw', 'stone', 'boulder', 'landscape'], source: 'builtin', format: 'procedural', bounds: [1.4, 0.9, 1.2] },
+  { id: 'builtin:cedar-siding', name: 'Weathered cedar siding', description: 'Warm cedar with subtle horizontal grain and a matte finish.', kind: 'material', tags: ['wood', 'cedar', 'siding', 'house', 'pnw'], source: 'builtin', format: 'procedural' },
+  { id: 'builtin:dark-shingles', name: 'Charcoal roof shingles', description: 'Layered charcoal shingles with subtle granule variation.', kind: 'material', tags: ['roof', 'shingles', 'charcoal', 'house'], source: 'builtin', format: 'procedural' },
+  { id: 'builtin:aged-timber', name: 'Aged porch timber', description: 'Deep brown fir with visible linear grain.', kind: 'material', tags: ['wood', 'timber', 'porch', 'house'], source: 'builtin', format: 'procedural' },
+  { id: 'builtin:basalt-stone', name: 'Weathered basalt', description: 'Cool gray basalt with fine surface variation.', kind: 'material', tags: ['stone', 'basalt', 'foundation', 'path'], source: 'builtin', format: 'procedural' },
+  { id: 'builtin:window-glass', name: 'Clear window glass', description: 'Subtle blue-green glazing with a low-roughness reflection.', kind: 'material', tags: ['glass', 'window', 'reflective'], source: 'builtin', format: 'procedural' },
+  { id: 'builtin:forest-canopy', name: 'Forest canopy', description: 'Deep evergreen foliage with varied needle greens.', kind: 'material', tags: ['forest', 'evergreen', 'foliage'], source: 'builtin', format: 'procedural' },
+  { id: 'builtin:forest-floor', name: 'Mossy forest floor', description: 'Layered moss, soil, and leaf litter for Northwest ground cover.', kind: 'material', tags: ['pnw', 'forest', 'moss', 'ground', 'landscape'], source: 'builtin', format: 'procedural' },
+  { id: 'builtin:painted-cream', name: 'Cream trim paint', description: 'Soft warm white exterior trim with a satin sheen.', kind: 'material', tags: ['paint', 'trim', 'cream', 'house'], source: 'builtin', format: 'procedural' },
+  { id: 'builtin:pnw-overcast', name: 'PNW overcast sky', description: 'Soft, bright overcast environment lighting for Northwest exteriors.', kind: 'environment', tags: ['pnw', 'overcast', 'sky', 'environment', 'lighting'], source: 'builtin', format: 'procedural' },
+];
+
+export const builtinAssets = definitions.map((record) => assetRecordSchema.parse(record));
+export const builtinAssetMap = new Map(builtinAssets.map((record) => [record.id, record]));

@@ -4,11 +4,12 @@ import { toolSchemas, type ToolName } from '../shared/schema.js';
 
 const api = process.env.SCENE_API ?? `http://127.0.0.1:${process.env.PORT ?? '3001'}`;
 const descriptions: Record<ToolName, string> = {
-  create_object: 'Create a box, sphere, cylinder, cone, or plane in the current scene.',
+  create_object: 'Create a box, sphere, cylinder, cone, plane, or searchable catalog model in the current scene.',
   update_object: 'Update a scene object by its stable ID.',
   delete_object: 'Delete a scene object by its stable ID.',
   list_objects: 'List scene objects and their current properties.',
   inspect_object: 'Inspect one scene object by ID.',
+  search_assets: 'Search the local catalog for models, material presets, or lighting environments.',
   set_camera: 'Set the scene camera position, target, or view size.',
   set_lighting: 'Update ambient or directional scene lighting.',
   render_scene: 'Capture a PNG checkpoint of the current scene for visual inspection.',
@@ -19,7 +20,7 @@ const descriptions: Record<ToolName, string> = {
     'Record a scene evaluation, human decision, change request, or evidence-backed tool issue.',
 };
 
-const server = new McpServer({ name: 'fieldwork', version: '1.0.0' });
+const server = new McpServer({ name: 'fieldwork', version: '2.0.0' });
 for (const [name, schema] of Object.entries(toolSchemas) as [
   ToolName,
   (typeof toolSchemas)[ToolName],

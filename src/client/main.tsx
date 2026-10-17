@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react';
 import type { Scene } from '../shared/schema.js';
 import { Viewport } from './Viewport.js';
 import { App } from './App.js';
+import { exportBrowserScene } from './scene-export.js';
 import '@fontsource/dm-sans/400.css';
 import '@fontsource/dm-sans/500.css';
 import '@fontsource/dm-sans/600.css';
@@ -38,6 +39,7 @@ function CheckpointView({ id }: { id: string }) {
   );
 }
 const checkpoint = new URLSearchParams(location.search).get('checkpoint');
+window.__fieldworkExport = exportBrowserScene;
 createRoot(document.getElementById('root')!).render(
   checkpoint ? <CheckpointView id={checkpoint} /> : <App />,
 );

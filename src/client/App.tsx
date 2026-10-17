@@ -9,6 +9,7 @@ import type {
   ToolName,
   ToolResponse,
   SceneExport,
+  AssetRecord,
 } from '../shared/schema.js';
 import { Viewport } from './Viewport.js';
 
@@ -23,6 +24,7 @@ const glyph: Record<SceneObject['type'], string> = {
   cylinder: '▥',
   cone: '△',
   plane: '▱',
+  asset: '⌂',
 };
 const pretty = (value: unknown) => JSON.stringify(value, null, 2);
 
@@ -38,6 +40,9 @@ export function App() {
   const [pendingTools, setPendingTools] = useState<{ executionId: string; tool: string }[]>([]);
   const [tab, setTab] = useState<'activity' | 'checkpoints' | 'feedback'>('activity');
   const [saveName, setSaveName] = useState('garden');
+  const [assetQuery, setAssetQuery] = useState('pnw');
+  const [assetKind, setAssetKind] = useState<'model' | 'material' | 'environment'>('model');
+  const [assetResults, setAssetResults] = useState<AssetRecord[]>([]);
   const [reviewCheckpoint, setReviewCheckpoint] = useState('');
   const [reviewText, setReviewText] = useState('');
   const [reviewKind, setReviewKind] = useState<'approval' | 'change_request'>('approval');
@@ -239,11 +244,43 @@ export function App() {
               }}
             >
               <option value="">＋ Choose geometry</option>
-              {Object.keys(glyph).map((type) => (
+              {(['box', 'sphere', 'cylinder', 'cone', 'plane'] as const).map((type) => (
                 <option key={type}>{type}</option>
               ))}
             </select>
           </div>
+          <form
+            className="add-object"
+            onSubmit={async (event) => {
+              event.preventDefault();
+              const response = await command('search_assets', { query: assetQuery, kind: assetKind });
+              setAssetResults((response?.result as AssetRecord[] | undefined) ?? []);
+            }}
+          >
+            <label htmlFor="asset-query">SEARCH LOCAL ASSETS</label>
+            <input id="asset-query" value={assetQuery} onChange={(event) => setAssetQuery(event.target.value)} />
+            <select aria-label="Asset kind" value={assetKind} onChange={(event) => setAssetKind(event.target.value as typeof assetKind)}>
+              <option value="model">Models</option>
+              <option value="material">Materials</option>
+              <option value="environment">Lighting</option>
+            </select>
+            <button type="submit" disabled={busy}>Search</button>
+            {assetResults.map((asset) => (
+              <button
+                type="button"
+                key={asset.id}
+                disabled={busy}
+                title={asset.description}
+                onClick={() => {
+                  if (asset.kind === 'model') void command('create_object', { name: asset.name, type: 'asset', assetId: asset.id });
+                  else if (asset.kind === 'environment') void command('set_lighting', { environmentAssetId: asset.id });
+                  else void command('create_object', { name: asset.name, type: 'box', materialId: asset.id });
+                }}
+              >
+                {asset.kind === 'model' ? '＋ ' : asset.kind === 'environment' ? '☼ ' : '▧ '}{asset.name}
+              </button>
+            ))}
+          </form>
           <div className="properties">
             <h3>OBJECT PROPERTIES</h3>
             {object ? (
@@ -609,8 +646,8 @@ function ObjectEditor({
     <form
       onSubmit={(event) => {
         event.preventDefault();
-        const { id, name, position, rotation, scale, dimensions, color, visible } = draft;
-        void onSave({ id, name, position, rotation, scale, dimensions, color, visible });
+        const { id, name, position, rotation, scale, dimensions, color, visible, roughness, metalness, materialId } = draft;
+        void onSave({ id, name, position, rotation, scale, dimensions, color, visible, roughness, metalness, materialId });
       }}
     >
       <label>
@@ -667,6 +704,34 @@ function ObjectEditor({
             onChange={(e) => setDraft({ ...draft, visible: e.target.checked })}
           />
           Visible
+        </label>
+      </div>
+      <div className="material-row">
+        <label>
+          Roughness
+          <input
+            type="number"
+            min="0"
+            max="1"
+            step="0.01"
+            aria-label="Roughness"
+            placeholder="asset default"
+            value={draft.roughness ?? ''}
+            onChange={(e) => setDraft({ ...draft, roughness: e.target.value === '' ? undefined : e.target.valueAsNumber })}
+          />
+        </label>
+        <label>
+          Metalness
+          <input
+            type="number"
+            min="0"
+            max="1"
+            step="0.01"
+            aria-label="Metalness"
+            placeholder="asset default"
+            value={draft.metalness ?? ''}
+            onChange={(e) => setDraft({ ...draft, metalness: e.target.value === '' ? undefined : e.target.valueAsNumber })}
+          />
         </label>
       </div>
       <div className="property-actions">

@@ -74,7 +74,7 @@ Generated output is ignored by Git. Keep artifacts to revisit a run; the live AP
 | `PORT`          | `3001`                                   | API / production UI port            |
 | `VITE_PORT`     | `5173`                                   | Development UI port                 |
 | `CLIENT_URL`    | Development UI, or production API origin | URL reachable by screenshot browser |
-| `DATA_DIR`      | `data`                                   | Named saves                         |
+| `DATA_DIR`      | `data`                                   | Named saves and optional local asset catalog (`assets/catalog.json`) |
 | `ARTIFACTS_DIR` | `artifacts/runs`                         | Run directory parent                |
 | `RUN_ID`        | Timestamp + random suffix                | New run identifier                  |
 | `SCENE_API`     | `http://127.0.0.1:3001`                  | CLI / demo API base                 |

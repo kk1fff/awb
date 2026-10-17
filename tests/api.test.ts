@@ -42,7 +42,7 @@ beforeEach(async () => {
       if (failCapture) throw new Error('Simulated browser failure');
       const id = new URL(url).searchParams.get('checkpoint');
       const scene = await get<Scene>(`/api/checkpoints/${id}/scene`);
-      expect(scene.schemaVersion).toBe(1); // Read routes must not block behind render's command queue.
+      expect(scene.schemaVersion).toBe(2); // Read routes must not block behind render's command queue.
       await writeFile(output, 'test image placeholder');
     },
   };
@@ -60,7 +60,7 @@ afterEach(async () => {
 describe('public tool API', () => {
   it('discovers every tool and exercises create, inspect, list, patch and delete', async () => {
     const docs = await get<{ tools: Record<string, unknown> }>('/api/tools');
-    expect(Object.keys(docs.tools)).toHaveLength(12);
+    expect(Object.keys(docs.tools)).toHaveLength(13);
     const created = await call('create_object', {
       name: 'Tree',
       type: 'cylinder',
@@ -106,6 +106,73 @@ describe('public tool API', () => {
     expect(await get('/api/state')).toEqual(before);
     expect((await call('surprise')).error?.code).toBe('UNKNOWN_TOOL');
     expect((await call('toString')).error?.code).toBe('UNKNOWN_TOOL');
+  });
+  it('searches the original catalog and places assets without changing primitive semantics', async () => {
+    const search = await call('search_assets', { query: 'pnw craftsman', kind: 'model' });
+    expect(search.success).toBe(true);
+    const matches = search.result as { id: string; bounds: number[] }[];
+    expect(matches.some((asset) => asset.id === 'builtin:pnw-craftsman-shell')).toBe(true);
+    expect(search.sceneRevision).toBe(0);
+    const created = await call('create_object', {
+      name: 'Craftsman shell',
+      type: 'asset',
+      assetId: 'builtin:pnw-craftsman-shell',
+    });
+    expect(created.success).toBe(true);
+    expect(created.sceneRevision).toBe(1);
+    expect(created.result).toMatchObject({
+      type: 'asset',
+      assetId: 'builtin:pnw-craftsman-shell',
+      assetBounds: [8, 6.6, 6.2],
+      dimensions: [8, 6.6, 6.2],
+      color: '#ffffff',
+    });
+    const material = await call('create_object', {
+      name: 'Siding test', type: 'box', materialId: 'builtin:cedar-siding',
+    });
+    expect(material.success).toBe(true);
+    expect((await call('set_lighting', { environmentAssetId: 'builtin:pnw-overcast' })).success).toBe(true);
+    const cleared = await call('set_lighting', { environmentAssetId: null });
+    expect((cleared.result as Scene['lighting']).environmentAssetId).toBeUndefined();
+    const missing = await call('create_object', { name: 'Missing', type: 'asset', assetId: 'local:not-here' });
+    expect(missing.success).toBe(false);
+    expect(missing.error?.code).toBe('ASSET_NOT_FOUND');
+    expect(missing.sceneRevision).toBe(4);
+  });
+  it('searches a local catalog and rejects paths that escape its directory', async () => {
+    const assets = path.join(root, 'data', 'assets');
+    await mkdir(path.join(assets, 'models'), { recursive: true });
+    await mkdir(path.join(assets, 'textures'), { recursive: true });
+    await mkdir(path.join(assets, 'lighting'), { recursive: true });
+    await writeFile(path.join(assets, 'models', 'test.glb'), 'not-a-glb');
+    await writeFile(path.join(assets, 'textures', 'cedar.png'), 'texture');
+    await writeFile(path.join(assets, 'lighting', 'overcast.hdr'), 'environment');
+    await writeFile(path.join(assets, 'catalog.json'), JSON.stringify({ assets: [
+      { id: 'local:cedar-house', name: 'Cedar house', description: 'User supplied model', kind: 'model',
+        tags: ['pnw', 'home'], source: 'local', format: 'glb', file: 'models/test.glb', bounds: [4, 3, 5] },
+      { id: 'local:cedar-surface', name: 'Cedar surface', description: 'User supplied texture', kind: 'material',
+        tags: ['wood', 'pnw'], source: 'local', format: 'png', file: 'textures/cedar.png', baseColor: '#aa7755', roughness: 0.8, metalness: 0 },
+      { id: 'local:overcast', name: 'Overcast', description: 'User supplied environment', kind: 'environment',
+        tags: ['pnw', 'sky'], source: 'local', format: 'hdr', file: 'lighting/overcast.hdr' },
+    ] }));
+    const search = await call('search_assets', { query: 'cedar pnw', kind: 'model' });
+    expect(search.result).toEqual(expect.arrayContaining([expect.objectContaining({ id: 'local:cedar-house' })]));
+    const created = await call('create_object', { name: 'User house', type: 'asset', assetId: 'local:cedar-house' });
+    expect(created.success).toBe(true);
+    const file = await fetch(`${base}/api/assets/local%3Acedar-house/file`);
+    expect(file.status).toBe(200);
+    expect(await file.text()).toBe('not-a-glb');
+    const material = await call('create_object', { name: 'Local texture', type: 'box', materialId: 'local:cedar-surface' });
+    expect(material.success).toBe(true);
+    expect((await fetch(`${base}/api/assets/local%3Acedar-surface/file`)).headers.get('content-type')).toContain('image/png');
+    expect((await call('set_lighting', { environmentAssetId: 'local:overcast' })).success).toBe(true);
+    await writeFile(path.join(assets, 'catalog.json'), JSON.stringify({ assets: [{
+      id: 'local:escape', name: 'Escape', description: '', kind: 'model', tags: [], source: 'local',
+      format: 'glb', file: '../secret.glb', bounds: [1, 1, 1],
+    }] }));
+    const invalid = await call('search_assets', {});
+    expect(invalid.success).toBe(false);
+    expect(invalid.error?.code).toBe('INVALID_ASSET_CATALOG');
   });
   it('exports only visible scene meshes as a revision-linked GLB artifact', async () => {
     await call('create_object', {

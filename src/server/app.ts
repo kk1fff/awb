@@ -12,12 +12,32 @@ export async function createApp(options: ServiceOptions & { clientDir?: string }
   app.disable('x-powered-by');
   app.use(express.json({ limit: '1mb' }));
   app.get('/api/health', (_req, res) =>
-    res.json({ ready: true, runId: options.runId, toolVersion: '1' }),
+    res.json({ ready: true, runId: options.runId, toolVersion: '2' }),
   );
   app.get('/api/state', (_req, res) => res.json(service.engine.snapshot()));
+  app.get('/api/assets/:id/file', async (req, res, next) => {
+    try {
+      const file = await service.assets.filePath(req.params.id);
+      const extension = path.extname(file).toLowerCase();
+      const type = extension === '.glb' ? 'model/gltf-binary'
+        : extension === '.png' ? 'image/png'
+          : ['.jpg', '.jpeg'].includes(extension) ? 'image/jpeg'
+            : extension === '.webp' ? 'image/webp' : 'application/octet-stream';
+      res.type(type).sendFile(file);
+    } catch (error) {
+      next(error);
+    }
+  });
+  app.get('/api/assets/:id', async (req, res, next) => {
+    try {
+      res.json(await service.assets.get(req.params.id));
+    } catch (error) {
+      next(error);
+    }
+  });
   app.get('/api/tools', (_req, res) =>
     res.json({
-      toolVersion: '1',
+      toolVersion: '2',
       tools: Object.fromEntries(
         Object.entries(toolSchemas).map(([name, schema]) => [name, z.toJSONSchema(schema)]),
       ),

@@ -3,6 +3,7 @@ import {
   cameraSchema,
   emptyScene,
   lightingSchema,
+  migrateScene,
   sceneSchema,
   type Scene,
   type SceneObject,
@@ -31,10 +32,11 @@ export class SceneEngine {
       typeof value === 'object' &&
       value !== null &&
       'schemaVersion' in value &&
-      value.schemaVersion !== 1
+      value.schemaVersion !== 1 &&
+      value.schemaVersion !== 2
     )
-      throw new ToolError('UNSUPPORTED_VERSION', 'Only scene schemaVersion 1 is supported');
-    const next = sceneSchema.parse(value);
+      throw new ToolError('UNSUPPORTED_VERSION', 'Only scene schemaVersion 1 or 2 is supported');
+    const next = sceneSchema.parse(migrateScene(value));
     this.state = { ...structuredClone(next), revision: this.state.revision + 1 };
     return this.snapshot();
   }
@@ -60,8 +62,9 @@ export class SceneEngine {
           rotation: [0, 0, 0],
           dimensions: [1, 1, 1],
           scale: [1, 1, 1],
-          color: '#7a9d82',
+          color: args.type === 'asset' ? '#ffffff' : '#7a9d82',
           visible: true,
+          ...(args.type === 'asset' ? {} : { roughness: 0.86, metalness: 0 }),
           ...args,
           id: randomUUID(),
         } as SceneObject;
@@ -89,10 +92,16 @@ export class SceneEngine {
         break;
       }
       case 'set_lighting': {
-        const lighting = lightingSchema.parse({
+        const lightingDraft: Record<string, unknown> = {
           ambient: { ...this.state.lighting.ambient, ...(args.ambient as object) },
           directional: { ...this.state.lighting.directional, ...(args.directional as object) },
-        });
+          ...(this.state.lighting.environmentAssetId ? { environmentAssetId: this.state.lighting.environmentAssetId } : {}),
+        };
+        if (args.environmentAssetId !== undefined) {
+          if (args.environmentAssetId === null) delete lightingDraft.environmentAssetId;
+          else lightingDraft.environmentAssetId = args.environmentAssetId;
+        }
+        const lighting = lightingSchema.parse(lightingDraft);
         this.state.lighting = lighting;
         result = lighting;
         break;

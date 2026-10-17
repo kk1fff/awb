@@ -13,6 +13,7 @@ import {
 } from '../shared/schema.js';
 import { capture, type Capture } from './capture.js';
 import { exportScene } from './export.js';
+import { AssetCatalog } from './asset-catalog.js';
 
 export interface LiveMessage {
   type: 'tool-start' | 'update';
@@ -41,12 +42,14 @@ export class ToolService {
   readonly events: ToolEvent[] = [];
   readonly checkpoints: Checkpoint[] = [];
   readonly reviews: Review[] = [];
+  readonly assets: AssetCatalog;
   readonly runDir: string;
   private listeners = new Set<(message: LiveMessage) => void>();
   private queue: Promise<unknown> = Promise.resolve();
   constructor(readonly options: ServiceOptions) {
     if (!/^[a-zA-Z0-9][\w-]{0,99}$/.test(options.runId)) throw new Error('Invalid RUN_ID');
     this.runDir = path.resolve(options.artifactsDir, options.runId);
+    this.assets = new AssetCatalog(options.dataDir);
   }
   async init(): Promise<void> {
     await mkdir(path.join(this.options.dataDir, 'scenes'), { recursive: true });
@@ -173,6 +176,34 @@ export class ToolService {
     executionId: string,
     timestamp: string,
   ): Promise<unknown> {
+    if (tool === 'search_assets')
+      return this.assets.search(args.query as string, args.kind as 'model' | 'material' | 'environment' | undefined, args.limit as number);
+    let commandArgs = args;
+    if (tool === 'create_object') {
+      if (args.type === 'asset') {
+        const asset = await this.assets.get(args.assetId as string, 'model');
+        if (!asset.bounds)
+          throw new ToolError('INVALID_ASSET_CATALOG', `Model ${asset.id} has no bounds.`);
+        if (asset.source === 'local') await this.assets.filePath(asset.id);
+        commandArgs = {
+          ...args,
+          dimensions: args.dimensions ?? asset.bounds,
+          assetBounds: asset.bounds,
+        };
+      }
+      if (args.materialId) {
+        const material = await this.assets.get(args.materialId as string, 'material');
+        if (material.source === 'local') await this.assets.filePath(material.id);
+      }
+    }
+    if (tool === 'update_object' && args.materialId) {
+      const material = await this.assets.get(args.materialId as string, 'material');
+      if (material.source === 'local') await this.assets.filePath(material.id);
+    }
+    if (tool === 'set_lighting' && args.environmentAssetId) {
+      const environment = await this.assets.get(args.environmentAssetId as string, 'environment');
+      if (environment.source === 'local') await this.assets.filePath(environment.id);
+    }
     if (tool === 'save_scene') {
       const scene = this.engine.snapshot();
       const name = args.name as string;
@@ -208,12 +239,27 @@ export class ToolService {
       } catch {
         throw new ToolError('INVALID_SCENE', 'Saved scene contains invalid JSON');
       }
+      const next = value as { objects?: Array<{ type?: string; assetId?: string; materialId?: string }>; lighting?: { environmentAssetId?: string } };
+      for (const object of next.objects ?? []) {
+        if (object.type === 'asset' && object.assetId) {
+          const asset = await this.assets.get(object.assetId, 'model');
+          if (asset.source === 'local') await this.assets.filePath(asset.id);
+        }
+        if (object.materialId) {
+          const material = await this.assets.get(object.materialId, 'material');
+          if (material.source === 'local') await this.assets.filePath(material.id);
+        }
+      }
+      if (next.lighting?.environmentAssetId) {
+        const environment = await this.assets.get(next.lighting.environmentAssetId, 'environment');
+        if (environment.source === 'local') await this.assets.filePath(environment.id);
+      }
       return this.engine.load(value);
     }
     if (tool === 'render_scene')
       return this.render(args.label as string | undefined, executionId, timestamp);
     if (tool === 'export_scene')
-      return exportScene(this.engine.snapshot(), this.runDir, executionId);
+      return exportScene(this.engine.snapshot(), this.runDir, executionId, this.options.clientUrl);
     if (tool === 'record_review') {
       const review = {
         ...args,
@@ -261,7 +307,7 @@ export class ToolService {
       );
       return review;
     }
-    return this.engine.execute(tool, args);
+    return this.engine.execute(tool, commandArgs);
   }
   private async render(
     label: string | undefined,

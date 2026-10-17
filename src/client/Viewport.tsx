@@ -42,72 +42,12 @@ export function Viewport({
     renderer.toneMappingExposure = 1.05;
     renderer.domElement.setAttribute('aria-label', '3D scene viewport');
     element.appendChild(renderer.domElement);
-    const world = buildWorld(scene);
-    const canonical = JSON.stringify(scene.camera);
-    const view =
-      !captureMode && localView.current?.canonical === canonical
-        ? localView.current.camera
-        : scene.camera;
-    const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 1000);
-    camera.position.fromArray(view.position);
-    camera.lookAt(new THREE.Vector3(...view.target));
-    const controls = new OrbitControls(camera, renderer.domElement);
-    controls.target.fromArray(view.target);
-    controls.enabled = !captureMode;
-    controls.enableDamping = false;
-    controls.minZoom = 0.1;
-    controls.maxZoom = 20;
-    controls.update();
-    const resize = () => {
-      const width = element.clientWidth;
-      const height = element.clientHeight;
-      const half = view.verticalSize / 2;
-      const aspect = width / Math.max(height, 1);
-      Object.assign(camera, {
-        left: -half * aspect,
-        right: half * aspect,
-        top: half,
-        bottom: -half,
-      });
-      camera.updateProjectionMatrix();
-      renderer.setSize(width, height);
-    };
-    const observer = new ResizeObserver(resize);
-    observer.observe(element);
-    resize();
-    const reportCamera = () => {
-      const current = {
-        position: camera.position.toArray(),
-        target: controls.target.toArray(),
-        verticalSize: view.verticalSize / camera.zoom,
-      };
-      if (!captureMode) localView.current = { canonical, camera: current };
-      callbacks.current.onCamera?.(current);
-    };
-    controls.addEventListener('change', reportCamera);
-    reportCamera();
+    let world: THREE.Scene | undefined;
+    let controls: OrbitControls | undefined;
+    let observer: ResizeObserver | undefined;
+    let animation = 0;
+    let disposed = false;
     let pointer: { x: number; y: number } | undefined;
-    const down = (event: PointerEvent) => {
-      pointer = { x: event.clientX, y: event.clientY };
-    };
-    const up = (event: PointerEvent) => {
-      if (!pointer || Math.hypot(event.clientX - pointer.x, event.clientY - pointer.y) > 5) return;
-      const rect = renderer.domElement.getBoundingClientRect();
-      const ray = new THREE.Raycaster();
-      ray.setFromCamera(
-        new THREE.Vector2(
-          ((event.clientX - rect.left) / rect.width) * 2 - 1,
-          (-(event.clientY - rect.top) / rect.height) * 2 + 1,
-        ),
-        camera,
-      );
-      const hit = ray
-        .intersectObjects(world.children)
-        .find((h) => h.object.visible && h.object.userData.id);
-      if (hit) callbacks.current.onSelect?.(hit.object.userData.id as string);
-    };
-    renderer.domElement.addEventListener('pointerdown', down);
-    renderer.domElement.addEventListener('pointerup', up);
     const contextLost = (event: Event) => {
       event.preventDefault();
       const message = 'WebGL context lost. Reload the viewport to recover.';
@@ -116,26 +56,99 @@ export function Viewport({
       callbacks.current.onError?.(message);
     };
     renderer.domElement.addEventListener('webglcontextlost', contextLost);
-    let animation = 0;
-    let frames = 0;
-    const frame = () => {
-      renderer.render(world, camera);
-      if (++frames === 2)
-        window.__sceneReady = {
-          revision: scene.revision,
-          objectIds: scene.objects.filter((o) => o.visible).map((o) => o.id),
+    let down: ((event: PointerEvent) => void) | undefined;
+    let up: ((event: PointerEvent) => void) | undefined;
+    void buildWorld(scene).then((loadedWorld) => {
+      if (disposed) {
+        disposeWorld(loadedWorld);
+        return;
+      }
+      world = loadedWorld;
+      const canonical = JSON.stringify(scene.camera);
+      const view =
+        !captureMode && localView.current?.canonical === canonical
+          ? localView.current.camera
+          : scene.camera;
+      const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 1000);
+      camera.position.fromArray(view.position);
+      camera.lookAt(new THREE.Vector3(...view.target));
+      controls = new OrbitControls(camera, renderer.domElement);
+      controls.target.fromArray(view.target);
+      controls.enabled = !captureMode;
+      controls.enableDamping = false;
+      controls.minZoom = 0.1;
+      controls.maxZoom = 20;
+      controls.update();
+      const resize = () => {
+        const width = element.clientWidth;
+        const height = element.clientHeight;
+        const half = view.verticalSize / 2;
+        const aspect = width / Math.max(height, 1);
+        Object.assign(camera, {
+          left: -half * aspect,
+          right: half * aspect,
+          top: half,
+          bottom: -half,
+        });
+        camera.updateProjectionMatrix();
+        renderer.setSize(width, height);
+      };
+      observer = new ResizeObserver(resize);
+      observer.observe(element);
+      resize();
+      const reportCamera = () => {
+        const current = {
+          position: camera.position.toArray(),
+          target: controls!.target.toArray(),
+          verticalSize: view.verticalSize / camera.zoom,
         };
-      animation = requestAnimationFrame(frame);
-    };
-    frame();
+        if (!captureMode) localView.current = { canonical, camera: current };
+        callbacks.current.onCamera?.(current);
+      };
+      controls.addEventListener('change', reportCamera);
+      reportCamera();
+      down = (event) => { pointer = { x: event.clientX, y: event.clientY }; };
+      up = (event) => {
+        if (!pointer || Math.hypot(event.clientX - pointer.x, event.clientY - pointer.y) > 5) return;
+        const rect = renderer.domElement.getBoundingClientRect();
+        const ray = new THREE.Raycaster();
+        ray.setFromCamera(
+          new THREE.Vector2(
+            ((event.clientX - rect.left) / rect.width) * 2 - 1,
+            (-(event.clientY - rect.top) / rect.height) * 2 + 1,
+          ),
+          camera,
+        );
+        const hit = ray.intersectObjects(world!.children, true).find((h) => h.object.visible && h.object.userData.id);
+        if (hit) callbacks.current.onSelect?.(hit.object.userData.id as string);
+      };
+      renderer.domElement.addEventListener('pointerdown', down);
+      renderer.domElement.addEventListener('pointerup', up);
+      let frames = 0;
+      const frame = () => {
+        renderer.render(world!, camera);
+        if (++frames === 2)
+          window.__sceneReady = {
+            revision: scene.revision,
+            objectIds: scene.objects.filter((o) => o.visible).map((o) => o.id),
+          };
+        animation = requestAnimationFrame(frame);
+      };
+      frame();
+    }).catch((error) => {
+      const message = `Scene asset loading failed: ${String(error)}`;
+      window.__sceneError = message;
+      callbacks.current.onError?.(message);
+    });
     return () => {
+      disposed = true;
       cancelAnimationFrame(animation);
-      observer.disconnect();
-      controls.dispose();
-      renderer.domElement.removeEventListener('pointerdown', down);
-      renderer.domElement.removeEventListener('pointerup', up);
+      observer?.disconnect();
+      controls?.dispose();
+      if (down) renderer.domElement.removeEventListener('pointerdown', down);
+      if (up) renderer.domElement.removeEventListener('pointerup', up);
       renderer.domElement.removeEventListener('webglcontextlost', contextLost);
-      disposeWorld(world);
+      if (world) disposeWorld(world);
       renderer.dispose();
       renderer.domElement.remove();
     };

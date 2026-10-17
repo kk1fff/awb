@@ -17,6 +17,8 @@ describe('scene command invariants', () => {
       }),
     ) as SceneObject;
     expect(object.scale).toEqual([1, 1, 1]);
+    expect(object.roughness).toBe(0.86);
+    expect(object.metalness).toBe(0);
     expect(engine.snapshot().revision).toBe(1);
     engine.execute(
       'update_object',
@@ -46,7 +48,19 @@ describe('scene command invariants', () => {
     expect(engine.snapshot().revision).toBe(1);
     saved.camera.position[0] = 500;
     expect(engine.snapshot().camera.position[0]).toBe(12);
-    expect(() => engine.load({ ...saved, schemaVersion: 2 })).toThrow('schemaVersion');
+    expect(() => engine.load({ ...saved, schemaVersion: 3 })).toThrow('schemaVersion');
+  });
+  it('migrates saved version 1 primitive scenes without changing IDs or appearance', () => {
+    const engine = new SceneEngine();
+    const object = engine.execute('create_object', { name: 'Old tree', type: 'cone' }) as SceneObject;
+    const version1 = JSON.parse(JSON.stringify({
+      ...engine.snapshot(),
+      schemaVersion: 1,
+      objects: [{ ...object, roughness: undefined, metalness: undefined }],
+    }));
+    engine.load(version1);
+    expect(engine.snapshot().schemaVersion).toBe(2);
+    expect(engine.snapshot().objects[0]).toMatchObject({ id: object.id, type: 'cone', roughness: 0.86, metalness: 0 });
   });
   it('rejects unknown fields, invalid dimensions, nonfinite transforms and malformed colors', () => {
     for (const patch of [
@@ -84,7 +98,7 @@ describe('geometry and renderer mapping', () => {
       g.dispose();
     });
   }
-  it('maps dimensions, scale, visibility, material and radians into Three.js', () => {
+  it('maps dimensions, scale, visibility, material and radians into Three.js', async () => {
     const engine = new SceneEngine();
     engine.execute('create_object', {
       name: 'Test',
@@ -95,7 +109,7 @@ describe('geometry and renderer mapping', () => {
       visible: false,
       color: '#ff0000',
     });
-    const world = buildWorld(engine.snapshot());
+    const world = await buildWorld(engine.snapshot());
     const mesh = world.children.find((o) => o instanceof Mesh) as Mesh;
     expect(mesh.scale.toArray()).toEqual([4, 3, 2]);
     expect(mesh.rotation.x).toBeCloseTo(Math.PI / 2);
