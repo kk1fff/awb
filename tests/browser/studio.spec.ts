@@ -74,6 +74,39 @@ test('@smoke scopes the browser viewport and public tools to a selected workspac
   expect((await request.get(imageUrl)).ok()).toBe(true);
 });
 
+test('@smoke clears a scoped asset picker after import and allows selecting the same file again', async ({
+  page,
+  request,
+}) => {
+  const createdWorkspace = await request.post('/api/workspaces', {
+    data: { name: 'Scoped asset importer' },
+  });
+  expect(createdWorkspace.status()).toBe(201);
+  const { workspace } = (await createdWorkspace.json()) as {
+    workspace: { id: string };
+  };
+  const api = `/api/workspaces/${workspace.id}`;
+  await page.goto(`/?workspace=${workspace.id}`);
+  const importer = page.getByRole('form', { name: 'Import a local asset' });
+  const file = { name: 'repeatable.glb', mimeType: 'model/gltf-binary', buffer: tinyGlb() };
+  const fileInput = importer.getByLabel('Asset file');
+  await fileInput.setInputFiles(file);
+  await importer.getByLabel('Asset name').fill('Repeatable local model');
+  await expect(importer.locator('.asset-preview canvas')).toBeVisible();
+  const responsePromise = page.waitForResponse((response) =>
+    response.url().endsWith(`${api}/assets/import`),
+  );
+  await importer.getByRole('button', { name: 'Add to local catalog' }).click();
+  expect((await responsePromise).status()).toBe(201);
+  await expect(fileInput).toHaveValue('');
+  await expect(importer.getByLabel('Asset name')).toHaveCount(0);
+  await page.screenshot({ path: 'artifacts/tests/scoped-asset-import-reset.png', fullPage: true });
+
+  await fileInput.setInputFiles(file);
+  await expect(importer.getByLabel('Asset name')).toHaveValue('repeatable');
+  await expect(importer.locator('.asset-preview canvas')).toBeVisible();
+});
+
 test('public lighting controls produce a visible change in a fixed-scene render', async ({
   page,
   request,
@@ -728,6 +761,19 @@ test('local asset previews import into the catalog and can be used through publi
     const button = importer.getByRole('button', { name: 'Add to local catalog' });
     await expect(button).toBeEnabled();
     await button.click();
+    const fileInput = importer.getByLabel('Asset file');
+    await expect(fileInput).toHaveValue('');
+    await expect(importer.getByLabel('Asset name')).toHaveCount(0);
+    if (file.name.endsWith('.glb')) {
+      await page.screenshot({
+        path: 'artifacts/tests/local-asset-import-reset.png',
+        fullPage: true,
+      });
+    }
+    await fileInput.setInputFiles(file);
+    await expect(importer.getByLabel('Asset name')).toHaveValue(file.name.replace(/\.[^.]+$/, ''));
+    if (preview === '3d') await expect(importer.locator('.asset-preview canvas')).toBeVisible();
+    else await expect(importer.getByAltText(`Preview of ${file.name}`)).toBeVisible();
   };
 
   const revisionBeforeImport = ((await (await request.get('/api/state')).json()) as Scene).revision;

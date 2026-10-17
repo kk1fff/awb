@@ -51,6 +51,7 @@ export function App() {
   const [assetKind, setAssetKind] = useState<'model' | 'material' | 'environment'>('model');
   const [assetResults, setAssetResults] = useState<AssetRecord[]>([]);
   const [assetFile, setAssetFile] = useState<File>();
+  const assetFileInput = useRef<HTMLInputElement>(null);
   const [assetName, setAssetName] = useState('');
   const [assetTags, setAssetTags] = useState('');
   const [assetPreviewReady, setAssetPreviewReady] = useState(false);
@@ -417,6 +418,7 @@ export function App() {
                 ]);
                 setAssetKind(value.asset.kind);
                 setAssetQuery(value.asset.name);
+                if (assetFileInput.current) assetFileInput.current.value = '';
                 setAssetFile(undefined);
                 setAssetName('');
                 setAssetTags('');
@@ -430,6 +432,7 @@ export function App() {
           >
             <label>IMPORT A LOCAL ASSET</label>
             <input
+              ref={assetFileInput}
               aria-label="Asset file"
               type="file"
               accept=".glb,.hdr,.png,.jpg,.jpeg,.webp"
