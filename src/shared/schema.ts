@@ -25,6 +25,7 @@ export const assetRecordSchema = z.object({
   kind: assetKind,
   tags: z.array(z.string()),
   source: z.enum(['builtin', 'local']),
+  originalFileName: z.string().min(1).max(255).optional(),
   format: z.string().optional(),
   file: z.string().optional(),
   baseColor: color.optional(),

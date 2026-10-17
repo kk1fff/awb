@@ -12,6 +12,9 @@ import type {
   AssetRecord,
 } from '../shared/schema.js';
 import { Viewport } from './Viewport.js';
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { RGBELoader } from 'three/addons/loaders/RGBELoader.js';
 
 async function get<T>(url: string): Promise<T> {
   const response = await fetch(url);
@@ -43,6 +46,12 @@ export function App() {
   const [assetQuery, setAssetQuery] = useState('pnw');
   const [assetKind, setAssetKind] = useState<'model' | 'material' | 'environment'>('model');
   const [assetResults, setAssetResults] = useState<AssetRecord[]>([]);
+  const [assetFile, setAssetFile] = useState<File>();
+  const [assetName, setAssetName] = useState('');
+  const [assetTags, setAssetTags] = useState('');
+  const [assetPreviewReady, setAssetPreviewReady] = useState(false);
+  const [assetPreviewError, setAssetPreviewError] = useState('');
+  const [assetImportBusy, setAssetImportBusy] = useState(false);
   const [reviewCheckpoint, setReviewCheckpoint] = useState('');
   const [reviewText, setReviewText] = useState('');
   const [reviewKind, setReviewKind] = useState<'approval' | 'change_request'>('approval');
@@ -280,6 +289,69 @@ export function App() {
                 {asset.kind === 'model' ? '＋ ' : asset.kind === 'environment' ? '☼ ' : '▧ '}{asset.name}
               </button>
             ))}
+          </form>
+          <form
+            className="asset-import add-object"
+            aria-label="Import a local asset"
+            onSubmit={async (event) => {
+              event.preventDefault();
+              if (!assetFile || !assetPreviewReady) return;
+              setAssetImportBusy(true);
+              setError('');
+              try {
+                const response = await fetch('/api/assets/import', {
+                  method: 'POST',
+                  headers: {
+                    'Content-Type': 'application/octet-stream',
+                    'X-Asset-Name': encodeURIComponent(assetName),
+                    'X-Asset-File-Name': encodeURIComponent(assetFile.name),
+                    'X-Asset-Tags': encodeURIComponent(JSON.stringify(assetTags.split(',').map((tag) => tag.trim()).filter(Boolean))),
+                  },
+                  body: assetFile,
+                });
+                const value = await response.json() as { asset?: AssetRecord; error?: { message?: string } };
+                if (!response.ok || !value.asset) throw new Error(value.error?.message ?? `Asset import failed (${response.status}).`);
+                setAssetResults((current) => [value.asset!, ...current.filter((item) => item.id !== value.asset!.id)]);
+                setAssetKind(value.asset.kind);
+                setAssetQuery(value.asset.name);
+                setAssetFile(undefined);
+                setAssetName('');
+                setAssetTags('');
+                setAssetPreviewReady(false);
+              } catch (e) {
+                setError(String(e));
+              } finally {
+                setAssetImportBusy(false);
+              }
+            }}
+          >
+            <label>IMPORT A LOCAL ASSET</label>
+            <input
+              aria-label="Asset file"
+              type="file"
+              accept=".glb,.hdr,.png,.jpg,.jpeg,.webp"
+              onChange={(event) => {
+                const file = event.currentTarget.files?.[0];
+                setAssetFile(file);
+                setAssetPreviewReady(false);
+                setAssetPreviewError('');
+                setAssetName(file?.name.replace(/\.[^.]+$/, '') ?? '');
+              }}
+            />
+            {assetFile && <>
+              <input aria-label="Asset name" value={assetName} onChange={(event) => setAssetName(event.target.value)} placeholder="Asset name" />
+              <input aria-label="Asset tags" value={assetTags} onChange={(event) => setAssetTags(event.target.value)} placeholder="Tags, comma separated" />
+              <AssetPreview
+                key={`${assetFile.name}-${assetFile.size}-${assetFile.lastModified}`}
+                file={assetFile}
+                onReady={(ready, message = '') => { setAssetPreviewReady(ready); setAssetPreviewError(message); }}
+              />
+              {assetPreviewError && <p className="asset-preview-error" role="alert">{assetPreviewError}</p>}
+              <button type="submit" disabled={!assetPreviewReady || assetImportBusy || !assetName.trim()}>
+                {assetImportBusy ? 'Importing…' : assetPreviewReady ? 'Add to local catalog' : 'Preview before import'}
+              </button>
+              <small className="asset-import-note">Local files only · GLB, HDR, PNG/JPEG/WebP · 100 MiB max</small>
+            </>}
           </form>
           <div className="properties">
             <h3>OBJECT PROPERTIES</h3>
@@ -747,4 +819,89 @@ function ObjectEditor({
       </div>
     </form>
   );
+}
+
+function AssetPreview({ file, onReady }: { file: File; onReady: (ready: boolean, message?: string) => void }) {
+  const host = useRef<HTMLDivElement>(null);
+  const callback = useRef(onReady);
+  callback.current = onReady;
+  const extension = file.name.split('.').at(-1)?.toLowerCase();
+  const isImage = ['png', 'jpg', 'jpeg', 'webp'].includes(extension ?? '');
+  const [imageUrl, setImageUrl] = useState('');
+  useEffect(() => {
+    let disposed = false;
+    const url = URL.createObjectURL(file);
+    if (isImage) {
+      const image = new Image();
+      image.onload = () => { if (!disposed) { setImageUrl(url); callback.current(true); } };
+      image.onerror = () => { if (!disposed) callback.current(false, 'The image could not be previewed.'); };
+      image.src = url;
+      return () => { disposed = true; URL.revokeObjectURL(url); };
+    }
+    const element = host.current;
+    if (!element) return () => URL.revokeObjectURL(url);
+    let renderer: THREE.WebGLRenderer | undefined;
+    let scene: THREE.Scene | undefined;
+    let previewEnvironment: THREE.Texture | undefined;
+    try {
+      renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+      renderer.setPixelRatio(1);
+      renderer.setSize(260, 150);
+      renderer.outputColorSpace = THREE.SRGBColorSpace;
+      renderer.toneMapping = THREE.ACESFilmicToneMapping;
+      element.appendChild(renderer.domElement);
+      scene = new THREE.Scene();
+      scene.background = new THREE.Color('#d8dfd5');
+      scene.add(new THREE.HemisphereLight('#ffffff', '#68735f', 2));
+      const light = new THREE.DirectionalLight('#fff2df', 3);
+      light.position.set(4, 7, 5);
+      scene.add(light);
+      const camera = new THREE.PerspectiveCamera(38, 260 / 150, 0.05, 10000);
+      const render = () => { if (!disposed && scene && renderer) { renderer.render(scene, camera); callback.current(true); } };
+      if (extension === 'hdr') {
+        new RGBELoader().load(url, (texture) => {
+          if (disposed || !scene) { texture.dispose(); return; }
+          previewEnvironment = texture;
+          texture.mapping = THREE.EquirectangularReflectionMapping;
+          scene.background = texture;
+          camera.position.set(0, 0, 3.5);
+          render();
+        }, undefined, (error) => { if (!disposed) callback.current(false, `HDR preview failed: ${String(error)}`); });
+      } else {
+        new GLTFLoader().load(url, (gltf) => {
+          if (disposed || !scene) return;
+          const model = gltf.scene;
+          scene.add(model);
+          const bounds = new THREE.Box3().setFromObject(model);
+          const size = bounds.getSize(new THREE.Vector3());
+          const center = bounds.getCenter(new THREE.Vector3());
+          model.position.sub(center);
+          const largest = Math.max(size.x, size.y, size.z);
+          camera.position.set(largest * 1.8, largest * 1.25, largest * 2.8);
+          camera.lookAt(0, 0, 0);
+          render();
+        }, undefined, (error) => { if (!disposed) callback.current(false, `GLB preview failed: ${String(error)}`); });
+      }
+    } catch (error) {
+      callback.current(false, `Preview could not start: ${String(error)}`);
+    }
+    return () => {
+      disposed = true;
+      if (scene) {
+        scene.traverse((item) => {
+          if (item instanceof THREE.Mesh) {
+            item.geometry.dispose();
+            for (const material of Array.isArray(item.material) ? item.material : [item.material]) material.dispose();
+          }
+        });
+      }
+      previewEnvironment?.dispose();
+      renderer?.dispose();
+      renderer?.domElement.remove();
+      URL.revokeObjectURL(url);
+    };
+  }, [file, extension, isImage]);
+  return isImage
+    ? <div className="asset-preview"><img src={imageUrl || undefined} alt={`Preview of ${file.name}`} /></div>
+    : <div ref={host} className="asset-preview asset-preview-canvas" aria-label={`3D preview of ${file.name}`} />;
 }

@@ -1,14 +1,17 @@
-import { access, readFile, realpath } from 'node:fs/promises';
+import { access, mkdir, readFile, realpath, rename, rm, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { z } from 'zod';
 import { builtinAssets } from '../shared/assets.js';
 import { assetRecordSchema, type AssetRecord } from '../shared/schema.js';
 import { ToolError } from '../engine/scene.js';
+import { validateImportedAsset } from './imported-asset.js';
 
 const manifestSchema = z.object({ assets: z.array(assetRecordSchema) }).strict();
 
 export class AssetCatalog {
   readonly directory: string;
+  private writeQueue: Promise<unknown> = Promise.resolve();
   constructor(dataDir: string) {
     this.directory = path.resolve(dataDir, 'assets');
   }
@@ -71,6 +74,65 @@ export class AssetCatalog {
       .filter((item) => item.score === 1)
       .sort((a, b) => b.score - a.score || a.record.name.localeCompare(b.record.name) || a.record.id.localeCompare(b.record.id));
     return ranked.slice(0, limit).map(({ record }) => record);
+  }
+
+  importLocalAsset(input: { name: string; fileName: string; tags: string[]; data: Buffer }): Promise<AssetRecord> {
+    const next = this.writeQueue.then(() => this.writeLocalAsset(input));
+    this.writeQueue = next.catch(() => undefined);
+    return next;
+  }
+
+  private async writeLocalAsset(input: { name: string; fileName: string; tags: string[]; data: Buffer }): Promise<AssetRecord> {
+    const name = input.name.trim();
+    if (!name || name.length > 120) throw new ToolError('INVALID_ASSET_METADATA', 'Asset name must contain 1–120 characters.');
+    const originalFileName = input.fileName.replaceAll('\\', '/').split('/').pop() ?? '';
+    if (!originalFileName || originalFileName.length > 255)
+      throw new ToolError('INVALID_ASSET_METADATA', 'Original file name must contain 1–255 characters.');
+    if (input.tags.length > 20 || input.tags.some((tag) => !tag.trim() || tag.trim().length > 40))
+      throw new ToolError('INVALID_ASSET_METADATA', 'Use up to 20 nonempty tags, each no longer than 40 characters.');
+    const validated = validateImportedAsset(input.fileName, input.data);
+    const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 48) || 'asset';
+    const id = `local:${slug}-${randomUUID().slice(0, 8)}`;
+    const extension = validated.format === 'jpeg' ? '.jpg' : `.${validated.format}`;
+    const folder = validated.kind === 'model' ? 'models' : validated.kind === 'environment' ? 'lighting' : 'textures';
+    const relativeFile = `${folder}/${id.slice('local:'.length)}${extension}`;
+    const file = path.join(this.directory, relativeFile);
+    const tempFile = `${file}.${randomUUID()}.tmp`;
+    await mkdir(path.dirname(file), { recursive: true });
+    await writeFile(tempFile, input.data, { flag: 'wx' });
+    const asset: AssetRecord = {
+      id,
+      name,
+      description: `Imported local ${validated.kind} asset.`,
+      kind: validated.kind,
+      tags: [...new Set(input.tags.map((tag) => tag.trim()).filter(Boolean))],
+      source: 'local',
+      originalFileName,
+      format: validated.format,
+      file: relativeFile,
+      ...(validated.bounds ? { bounds: validated.bounds } : {}),
+      ...(validated.kind === 'material' ? { roughness: 0.86, metalness: 0 } : {}),
+    };
+    try {
+      const all = await this.records();
+      if (all.some((record) => record.id === id)) throw new ToolError('INVALID_ASSET_METADATA', 'Generated asset ID already exists. Try importing again.');
+      const existing = all.filter((record) => record.source === 'local');
+      await rename(tempFile, file);
+      const catalogFile = path.join(this.directory, 'catalog.json');
+      const tempCatalog = `${catalogFile}.${randomUUID()}.tmp`;
+      try {
+        await writeFile(tempCatalog, JSON.stringify({ assets: [...existing, asset] }, null, 2), { flag: 'wx' });
+        await rename(tempCatalog, catalogFile);
+      } catch (error) {
+        await rm(tempCatalog, { force: true });
+        throw error;
+      }
+    } catch (error) {
+      await rm(tempFile, { force: true });
+      await rm(file, { force: true });
+      throw error;
+    }
+    return asset;
   }
 
   async filePath(id: string): Promise<string> {

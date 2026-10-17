@@ -18,7 +18,11 @@ Lighting defaults: ambient `{color:"#ffffff",intensity:1.5}`, directional `{colo
 
 Search with `search_assets` before placing a model or choosing a material/environment. Search is local and deterministic; it matches all query terms against IDs, names, descriptions, kinds, and tags. Built-in original PNW house/landscape assets and material presets are always available.
 
-User assets live under `DATA_DIR/assets` (default `data/assets`). Add a `catalog.json` file with entries like:
+User assets live under `DATA_DIR/assets` (default `data/assets`). In the workspace, select **Import a local asset**, choose one file, inspect its preview, set a name and optional comma-separated tags, then add it to the catalog. The app copies it into the local asset directory; it never downloads files from URLs or external catalogs. Imported assets are searchable and usable by agents through the existing `search_assets`, `create_object`, and `set_lighting` tools.
+
+The local upload endpoint is `POST /api/assets/import` with the file bytes as `application/octet-stream` and URL-encoded UTF-8 metadata headers: `X-Asset-Name`, `X-Asset-File-Name`, and `X-Asset-Tags` (a URL-encoded JSON string array). It returns `{ "asset": <catalog record> }` with status 201. Asset imports are local catalog operations, so they do not create scene tool events or change the scene revision. Individual files are limited to 100 MiB. Unsupported, malformed, or extension-mismatched files are rejected without adding a catalog record.
+
+The browser previews GLB models and HDR environments in a small 3D viewer and previews image maps directly before upload. For model records, bounds are derived from the GLB mesh positions and node transforms. Imported catalog records retain the original selected file name as provenance. API clients can still manage a catalog manifest directly if needed. Its entries use this format:
 
 ```json
 {
@@ -38,7 +42,7 @@ User assets live under `DATA_DIR/assets` (default `data/assets`). Add a `catalog
 }
 ```
 
-Supported local files are self-contained GLB models, which may contain standard glTF PBR texture maps; PNG/JPEG/WebP albedo maps for material entries; and HDR environment maps. Model entries require positive bounds in source units. Material records may set optional `baseColor`, `roughness`, and `metalness`. Files must stay within the asset directory; path traversal and symlink escapes are rejected. The app does not download or bundle third-party assets.
+Supported local files are self-contained glTF 2.0 GLB models with embedded PBR textures; PNG/JPEG/WebP albedo maps for material entries; and Radiance HDR environment maps at least 8 × 4 pixels. Model entries require positive bounds in source units. Material records may set optional `baseColor`, `roughness`, and `metalness`. Files must stay within the asset directory; path traversal and symlink escapes are rejected. The app does not download or bundle third-party assets.
 
 ## Operations
 

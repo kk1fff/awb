@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { expect, test, type APIRequestContext } from '@playwright/test';
 import type { Checkpoint, Scene, SceneObject, ToolResponse } from '../../src/shared/schema.js';
 import { mkdir, writeFile } from 'node:fs/promises';
+import { tinyGlb, tinyHdr, tinyPng } from '../helpers/assets.js';
 
 async function tool(request: APIRequestContext, name: string, args: unknown = {}) {
   const response = await request.post('/api/tools', { data: { tool: name, arguments: args } });
@@ -244,6 +245,47 @@ test('agent can search, build, inspect, correct, save and export a PNW Craftsman
     '',
     'Visual review: recognizable Northwest house composition, visible timber porch and roof, windows clear of the porch posts, and landscaping framed around the building. The included starter models are procedural and intentionally simple; geometry and foliage remain stylized rather than photorealistic.',
   ].join('\n'));
+});
+test('local asset previews import into the catalog and can be used through public scene tools', async ({ page, request }) => {
+  const errors: string[] = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  page.on('console', (message) => { if (message.type() === 'error') errors.push(message.text()); });
+  await page.goto('/');
+  await expect(page.getByRole('heading', { name: 'A world in the making.' })).toBeVisible();
+  const importer = page.getByRole('form', { name: 'Import a local asset' });
+  const importOne = async (file: { name: string; mimeType: string; buffer: Buffer }, name: string, tags: string[], preview: '3d' | 'image') => {
+    await importer.getByLabel('Asset file').setInputFiles(file);
+    await importer.getByLabel('Asset name').fill(name);
+    await importer.getByLabel('Asset tags').fill(tags.join(', '));
+    if (preview === '3d') await expect(importer.locator('.asset-preview canvas')).toBeVisible();
+    else await expect(importer.getByAltText(`Preview of ${file.name}`)).toBeVisible();
+    if (file.name.endsWith('.glb')) {
+      await mkdir('artifacts/tests', { recursive: true });
+      await page.screenshot({ path: 'artifacts/tests/local-asset-import-preview.png', fullPage: true });
+    }
+    const button = importer.getByRole('button', { name: 'Add to local catalog' });
+    await expect(button).toBeEnabled();
+    await button.click();
+  };
+
+  const revisionBeforeImport = ((await (await request.get('/api/state')).json()) as Scene).revision;
+  await importOne({ name: 'cedar-house.glb', mimeType: 'model/gltf-binary', buffer: tinyGlb() }, 'Cedar PNW house', ['house', 'pnw'], '3d');
+  let found = await tool(request, 'search_assets', { query: 'pnw house', kind: 'model' });
+  const house = (found.result as { id: string }[]).find((asset) => asset.id.startsWith('local:'))!;
+  const placed = await tool(request, 'create_object', { name: 'Imported Cedar House', type: 'asset', assetId: house.id });
+  await expect.poll(() => page.evaluate(() => window.__sceneReady?.objectIds)).toContain((placed.result as SceneObject).id);
+
+  await importOne({ name: 'overcast.hdr', mimeType: 'image/vnd.radiance', buffer: tinyHdr() }, 'Local overcast sky', ['pnw'], '3d');
+  found = await tool(request, 'search_assets', { query: 'overcast', kind: 'environment' });
+  const environment = (found.result as { id: string }[]).find((asset) => asset.id.startsWith('local:'))!;
+  await tool(request, 'set_lighting', { environmentAssetId: environment.id });
+
+  await importOne({ name: 'cedar.png', mimeType: 'image/png', buffer: tinyPng() }, 'Cedar color map', ['wood'], 'image');
+  found = await tool(request, 'search_assets', { query: 'cedar color', kind: 'material' });
+  const material = (found.result as { id: string }[]).find((asset) => asset.id.startsWith('local:'))!;
+  await tool(request, 'create_object', { name: 'Cedar sample', type: 'box', position: [3, 0, 0], materialId: material.id });
+  expect(((await (await request.get('/api/state')).json()) as Scene).revision).toBe(revisionBeforeImport + 3);
+  expect(errors).toEqual([]);
 });
 test('unknown checkpoint surfaces a visible failure instead of claiming render readiness', async ({
   page,

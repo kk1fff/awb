@@ -13,6 +13,7 @@ import type {
   ToolEvent,
   ToolResponse,
 } from '../src/shared/schema.js';
+import { tinyGlb, tinyHdr, tinyPng } from './helpers/assets.js';
 
 let server: Server;
 let base: string;
@@ -29,6 +30,18 @@ async function call(tool: string, args: unknown = {}): Promise<ToolResponse> {
 }
 async function get<T>(route: string): Promise<T> {
   return (await fetch(`${base}${route}`)).json() as Promise<T>;
+}
+async function uploadAsset(fileName: string, name: string, tags: string[], data: Buffer) {
+  return fetch(`${base}/api/assets/import`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/octet-stream',
+      'X-Asset-Name': encodeURIComponent(name),
+      'X-Asset-File-Name': encodeURIComponent(fileName),
+      'X-Asset-Tags': encodeURIComponent(JSON.stringify(tags)),
+    },
+    body: Uint8Array.from(data),
+  });
 }
 beforeEach(async () => {
   root = await mkdtemp(path.join(tmpdir(), 'fieldwork-api-'));
@@ -173,6 +186,40 @@ describe('public tool API', () => {
     const invalid = await call('search_assets', {});
     expect(invalid.success).toBe(false);
     expect(invalid.error?.code).toBe('INVALID_ASSET_CATALOG');
+  });
+  it('imports local GLB, HDR and image assets for public-tool use without mutating the scene', async () => {
+    const startingRevision = (await get<Scene>('/api/state')).revision;
+    const houseResponse = await uploadAsset('cedar-house.glb', 'Cedar PNW house', ['house', 'pnw'], tinyGlb());
+    expect(houseResponse.status).toBe(201);
+    const house = (await houseResponse.json() as { asset: { id: string; bounds: number[]; file: string; originalFileName: string } }).asset;
+    expect(house).toMatchObject({ name: 'Cedar PNW house', bounds: [2, 2, 2], file: expect.stringMatching(/^models\//), originalFileName: 'cedar-house.glb' });
+    const search = await call('search_assets', { query: 'pnw house', kind: 'model' });
+    expect(search.result).toEqual(expect.arrayContaining([expect.objectContaining({ id: house.id })]));
+    const placed = await call('create_object', { name: 'Imported home', type: 'asset', assetId: house.id });
+    expect(placed.success).toBe(true);
+    expect((placed.result as SceneObject).dimensions).toEqual([2, 2, 2]);
+
+    const hdrResponse = await uploadAsset('overcast.hdr', 'Local overcast sky', ['pnw', 'sky'], tinyHdr());
+    expect(hdrResponse.status).toBe(201);
+    const hdr = (await hdrResponse.json() as { asset: { id: string; kind: string } }).asset;
+    expect(hdr.kind).toBe('environment');
+    expect((await call('set_lighting', { environmentAssetId: hdr.id })).success).toBe(true);
+
+    const textureResponse = await uploadAsset('cedar.png', 'Cedar color map', ['wood'], tinyPng());
+    expect(textureResponse.status).toBe(201);
+    const texture = (await textureResponse.json() as { asset: { id: string; kind: string } }).asset;
+    expect(texture.kind).toBe('material');
+    expect((await call('create_object', { name: 'Textured cedar', type: 'box', materialId: texture.id })).success).toBe(true);
+    expect((await get<Scene>('/api/state')).revision).toBe(startingRevision + 3);
+
+    const invalid = await uploadAsset('fake.png', 'Fake image', [], Buffer.from('not an image'));
+    expect(invalid.status).toBe(400);
+    expect(await invalid.json()).toMatchObject({ error: { code: 'INVALID_ASSET_FILE' } });
+    const truncated = await uploadAsset('truncated.png', 'Truncated image', [], tinyPng().subarray(0, 30));
+    expect(truncated.status).toBe(400);
+    expect(await truncated.json()).toMatchObject({ error: { code: 'INVALID_ASSET_FILE' } });
+    const catalog = JSON.parse(await readFile(path.join(root, 'data', 'assets', 'catalog.json'), 'utf8')) as { assets: { id: string }[] };
+    expect(catalog.assets.map((asset) => asset.id)).toEqual([house.id, hdr.id, texture.id]);
   });
   it('exports only visible scene meshes as a revision-linked GLB artifact', async () => {
     await call('create_object', {

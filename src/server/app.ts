@@ -11,6 +11,29 @@ export async function createApp(options: ServiceOptions & { clientDir?: string }
   const app = express();
   app.disable('x-powered-by');
   app.use(express.json({ limit: '1mb' }));
+  app.post('/api/assets/import', express.raw({ type: 'application/octet-stream', limit: '100mb' }), async (req, res, next) => {
+    try {
+      const decode = (value: string | undefined, label: string) => {
+        if (!value) throw new ToolError('INVALID_ASSET_METADATA', `Missing ${label}.`);
+        try { return decodeURIComponent(value); }
+        catch { throw new ToolError('INVALID_ASSET_METADATA', `Invalid ${label} encoding.`); }
+      };
+      const tagsValue = decode(req.header('x-asset-tags'), 'asset tags');
+      let tags: unknown;
+      try { tags = JSON.parse(tagsValue); }
+      catch { throw new ToolError('INVALID_ASSET_METADATA', 'Asset tags must be a JSON array.'); }
+      if (!Array.isArray(tags) || tags.some((tag) => typeof tag !== 'string'))
+        throw new ToolError('INVALID_ASSET_METADATA', 'Asset tags must be a JSON array of strings.');
+      if (!Buffer.isBuffer(req.body)) throw new ToolError('INVALID_ASSET_FILE', 'Upload a file as application/octet-stream.');
+      const asset = await service.assets.importLocalAsset({
+        name: decode(req.header('x-asset-name'), 'asset name'),
+        fileName: decode(req.header('x-asset-file-name'), 'file name'),
+        tags,
+        data: req.body,
+      });
+      res.status(201).json({ asset });
+    } catch (error) { next(error); }
+  });
   app.get('/api/health', (_req, res) =>
     res.json({ ready: true, runId: options.runId, toolVersion: '2' }),
   );
@@ -90,7 +113,14 @@ export async function createApp(options: ServiceOptions & { clientDir?: string }
     app.use(express.static(options.clientDir));
     app.get('/', (_req, res) => res.sendFile(path.join(options.clientDir!, 'index.html')));
   }
-  const errors: ErrorRequestHandler = async (err, _req, res, _next) => {
+  const errors: ErrorRequestHandler = async (err, req, res, _next) => {
+    if (req.path === '/api/assets/import') {
+      const tooLarge = (err as { type?: string; status?: number }).type === 'entity.too.large' || (err as { status?: number }).status === 413;
+      const code = tooLarge ? 'ASSET_TOO_LARGE' : err instanceof ToolError ? err.code : 'INVALID_ASSET_FILE';
+      const message = tooLarge ? 'Files must be 100 MiB or smaller.' : err instanceof Error ? err.message : String(err);
+      res.status(tooLarge ? 413 : 400).json({ error: { code, message } });
+      return;
+    }
     const result = await service.execute(
       { tool: 'invalid_request', arguments: { message: String(err) } },
       new ToolError('INVALID_REQUEST', 'Request must be valid JSON and no larger than 1 MB.'),
