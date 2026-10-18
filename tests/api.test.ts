@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { mkdir, mkdtemp, readFile, rename, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import type { Server } from 'node:http';
@@ -558,7 +558,10 @@ describe('public tool API', () => {
       arguments: { name: 'garden' },
     });
     expect(loaded.success).toBe(true);
-    expect(fresh.service.engine.snapshot()).toEqual(expected);
+    expect(fresh.service.engine.snapshot()).toEqual({
+      ...expected,
+      revision: expected.revision + 1,
+    });
     const provenance = JSON.parse(
       await readFile(path.join(service.runDir, `save-${saved.executionId}.json`), 'utf8'),
     );
@@ -579,6 +582,75 @@ describe('public tool API', () => {
     );
     expect((await call('load_scene', { name: 'future' })).error?.code).toBe('UNSUPPORTED_VERSION');
     expect((await get<Scene>('/api/state')).revision).toBe(0);
+  });
+  it('recovers committed create, update, camera, lighting, delete and load operations at the same revision', async () => {
+    const created = await call('create_object', { name: 'Original', type: 'box' });
+    const object = created.result as SceneObject;
+    await call('save_scene', { name: 'recovery-base' });
+    await call('update_object', { id: object.id, position: [2, 1, -3] });
+    await call('set_camera', { target: [1, 0, 0], projection: 'perspective', fov: 38 });
+    await call('set_lighting', { ambient: { intensity: 1.7 } });
+    const temporary = await call('create_object', { name: 'Temporary', type: 'sphere' });
+    await call('delete_object', { id: (temporary.result as SceneObject).id });
+    const loaded = await call('load_scene', { name: 'recovery-base' });
+    expect(loaded.success).toBe(true);
+    expect(loaded.sceneRevision).toBe(7);
+    const committedScene = await get<Scene>('/api/state');
+
+    const fresh = await createApp({
+      ...service.options,
+      dataDir: path.join(root, 'data'),
+      artifactsDir: path.join(root, 'runs'),
+      runId: 'recovery-restart-one',
+    });
+    expect(fresh.service.engine.snapshot()).toEqual(committedScene);
+    expect(
+      JSON.parse(await readFile(path.join(fresh.service.runDir, 'run.json'), 'utf8')),
+    ).toMatchObject({
+      recovery: {
+        status: 'restored',
+        executionId: loaded.executionId,
+        runId: service.options.runId,
+        sceneRevision: 7,
+      },
+    });
+    const recoveryRoot = path.join(root, 'data/workspaces/default/recovery');
+    const pointer = JSON.parse(await readFile(path.join(recoveryRoot, 'current.json'), 'utf8')) as {
+      executionId: string;
+      previousExecutionId: string;
+    };
+    expect(pointer.executionId).toBe(loaded.executionId);
+    expect(pointer.previousExecutionId).toBeDefined();
+    expect(await readdir(path.join(recoveryRoot, 'snapshots'))).toHaveLength(2);
+    const oldRunEvents = (await readFile(path.join(service.runDir, 'events.jsonl'), 'utf8'))
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as ToolEvent);
+    expect(oldRunEvents).toContainEqual(
+      expect.objectContaining({
+        executionId: loaded.executionId,
+        tool: 'load_scene',
+        success: true,
+        sceneRevision: 7,
+      }),
+    );
+    const activity = await fresh.workspaces.context('default');
+    expect(activity.recentActivity).toContainEqual(
+      expect.objectContaining({ executionId: loaded.executionId, tool: 'load_scene' }),
+    );
+
+    const nextChange = await fresh.service.execute({
+      tool: 'set_camera',
+      arguments: { target: [4, 2, 1] },
+    });
+    expect(nextChange.sceneRevision).toBe(8);
+    const freshAgain = await createApp({
+      ...service.options,
+      dataDir: path.join(root, 'data'),
+      artifactsDir: path.join(root, 'runs'),
+      runId: 'recovery-restart-two',
+    });
+    expect(freshAgain.service.engine.snapshot()).toEqual(fresh.service.engine.snapshot());
   });
   it('freezes render snapshots and records checkpoint-linked reviews and tool feedback', async () => {
     const created = await call('create_object', { name: 'Stone', type: 'sphere' });
@@ -684,16 +756,140 @@ describe('public tool API', () => {
     expect(result.error?.code).toBe('IO_ERROR');
     expect(await get('/api/state')).toEqual(before);
   });
-  it('rolls back a mutation when the history sink cannot accept its event', async () => {
+  it('recovers a committed mutation when its event projection is temporarily unavailable', async () => {
     await rename(
       path.join(service.runDir, 'events.jsonl'),
       path.join(service.runDir, 'events-offline.jsonl'),
     );
     await mkdir(path.join(service.runDir, 'events.jsonl'));
     const result = await call('create_object', { name: 'Must not commit', type: 'box' });
-    expect(result.error?.code).toBe('HISTORY_WRITE_FAILED');
-    expect(result.sceneRevision).toBe(0);
+    expect(result.success).toBe(true);
+    expect(result.sceneRevision).toBe(1);
+    expect((await get<Scene>('/api/state')).objects).toHaveLength(1);
+    expect((await get<ToolEvent[]>('/api/events')).map((event) => event.executionId)).toContain(
+      result.executionId,
+    );
+    await rm(path.join(service.runDir, 'events.jsonl'), { recursive: true, force: true });
+    await rename(
+      path.join(service.runDir, 'events-offline.jsonl'),
+      path.join(service.runDir, 'events.jsonl'),
+    );
+    const fresh = await createApp({
+      ...service.options,
+      dataDir: path.join(root, 'data'),
+      artifactsDir: path.join(root, 'runs'),
+      runId: 'recovery-after-event-sink',
+    });
+    expect(fresh.service.engine.snapshot()).toEqual(await get<Scene>('/api/state'));
+    const repairedEvents = (await readFile(path.join(service.runDir, 'events.jsonl'), 'utf8'))
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as ToolEvent);
+    expect(repairedEvents).toContainEqual(
+      expect.objectContaining({ executionId: result.executionId, success: true }),
+    );
+  });
+  it('rolls back a scene mutation when the recovery pointer cannot be committed', async () => {
+    const pointerPath = path.join(root, 'data/workspaces/default/recovery/current.json');
+    await mkdir(pointerPath, { recursive: true });
+    const failed = await call('create_object', { name: 'Not committed', type: 'box' });
+    expect(failed.success).toBe(false);
+    expect(failed.error?.code).toBe('RECOVERY_WRITE_FAILED');
+    expect(failed.sceneRevision).toBe(0);
     expect((await get<Scene>('/api/state')).objects).toEqual([]);
-    expect(await get('/api/events')).toEqual([]);
+    await rm(pointerPath, { recursive: true, force: true });
+    const accepted = await call('create_object', { name: 'Committed', type: 'box' });
+    expect(accepted.success).toBe(true);
+    expect(accepted.sceneRevision).toBe(1);
+  });
+  it('keeps a corrupt workspace available with visible recovery error and blocks scene publication', async () => {
+    const isolatedRoot = await mkdtemp(path.join(tmpdir(), 'fieldwork-corrupt-recovery-'));
+    const dataDir = path.join(isolatedRoot, 'data');
+    const artifactsDir = path.join(isolatedRoot, 'runs');
+    const pointerPath = path.join(dataDir, 'workspaces/default/recovery/current.json');
+    await mkdir(path.dirname(pointerPath), { recursive: true });
+    await writeFile(pointerPath, '{bad json');
+    const broken = await createApp({
+      dataDir,
+      artifactsDir,
+      runId: 'recovery-error-run',
+      clientUrl: '',
+    });
+    const brokenServer = broken.app.listen(0, '127.0.0.1');
+    await new Promise<void>((resolve) => brokenServer.on('listening', resolve));
+    const address = brokenServer.address() as AddressInfo;
+    const brokenBase = `http://127.0.0.1:${address.port}`;
+    try {
+      const health = (await (await fetch(`${brokenBase}/api/health`)).json()) as {
+        ready: boolean;
+        recoveryError?: { code: string };
+      };
+      expect(health).toMatchObject({ ready: true, recoveryError: { code: 'RECOVERY_CORRUPT' } });
+      expect((await broken.workspaces.context('default')).recoveryError).toMatchObject({
+        code: 'RECOVERY_CORRUPT',
+      });
+      const write = await broken.service.execute({
+        tool: 'create_object',
+        arguments: { name: 'Must not overwrite recovery', type: 'box' },
+      });
+      expect(write.success).toBe(false);
+      expect(write.error?.code).toBe('RECOVERY_UNAVAILABLE');
+      const save = await broken.service.execute({
+        tool: 'save_scene',
+        arguments: { name: 'empty' },
+      });
+      expect(save.error?.code).toBe('RECOVERY_UNAVAILABLE');
+      const other = await broken.workspaces.create({ name: 'Healthy workspace', goal: 'test' });
+      expect((await broken.workspaces.context(other.id)).recoveryError).toBeUndefined();
+      expect(broken.service.engine.snapshot().objects).toEqual([]);
+      expect(await readFile(pointerPath, 'utf8')).toBe('{bad json');
+    } finally {
+      await new Promise<void>((resolve) => brokenServer.close(() => resolve()));
+      await rm(isolatedRoot, { recursive: true, force: true });
+    }
+  });
+  it('retains the previous recovery snapshot when the current snapshot is damaged', async () => {
+    const isolatedRoot = await mkdtemp(path.join(tmpdir(), 'fieldwork-damaged-snapshot-'));
+    const dataDir = path.join(isolatedRoot, 'data');
+    const artifactsDir = path.join(isolatedRoot, 'runs');
+    const first = await createApp({
+      dataDir,
+      artifactsDir,
+      runId: 'snapshot-source',
+      clientUrl: '',
+    });
+    const acceptedOne = await first.service.execute({
+      tool: 'create_object',
+      arguments: { name: 'First', type: 'box' },
+    });
+    const acceptedTwo = await first.service.execute({
+      tool: 'create_object',
+      arguments: { name: 'Second', type: 'box' },
+    });
+    expect(acceptedOne.success && acceptedTwo.success).toBe(true);
+    const recoveryDir = path.join(dataDir, 'workspaces/default/recovery');
+    const pointer = JSON.parse(await readFile(path.join(recoveryDir, 'current.json'), 'utf8')) as {
+      executionId: string;
+      previousExecutionId: string;
+    };
+    const currentSnapshot = path.join(recoveryDir, 'snapshots', `${pointer.executionId}.json`);
+    await writeFile(currentSnapshot, '{damaged');
+    const reopened = await createApp({
+      dataDir,
+      artifactsDir,
+      runId: 'snapshot-reopen',
+      clientUrl: '',
+    });
+    try {
+      expect(reopened.service.recoveryError).toMatchObject({ code: 'RECOVERY_CORRUPT' });
+      expect(await readdir(path.join(recoveryDir, 'snapshots'))).toContain(
+        `${pointer.previousExecutionId}.json`,
+      );
+      expect(
+        JSON.parse(await readFile(path.join(reopened.service.runDir, 'run.json'), 'utf8')),
+      ).toMatchObject({ recovery: { status: 'error', code: 'RECOVERY_CORRUPT' } });
+    } finally {
+      await rm(isolatedRoot, { recursive: true, force: true });
+    }
   });
 });

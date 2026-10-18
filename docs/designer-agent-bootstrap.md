@@ -42,4 +42,5 @@ For the PNW house task, judge the actual rendered image against photographic pla
 - `GET /api/tools` lists public tool schemas. `POST /api/tools` calls the default workspace; `POST /api/workspaces/<uuid>/tools` calls a specialist workspace.
 - `GET /api/instructions` returns this bootstrap as Markdown for API-only agents.
 - `docs/agent-workflow.md` and `docs/tools.md` describe the broader app workflow and tool contracts.
-- Named saves persist per workspace. On server restart, a workspace opens a new run; unsaved live scene state is volatile and is not recovered.
+- Every accepted scene-changing command is committed with a recovery snapshot. After restart, the workspace opens a new run with the exact last committed scene revision and object IDs restored. The new run's `run.json` records whether recovery occurred and, if so, the source execution ID, run ID, and revision. Named saves and prior run evidence persist too.
+- If recovery metadata or the current snapshot is corrupt or missing, the app still starts and exposes `recoveryError` in health and workspace context. Scene mutations, saves, renders, and exports then return `RECOVERY_UNAVAILABLE` until the recovery issue is repaired; do not proceed as if an empty scene were recovered.

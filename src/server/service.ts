@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { appendFile, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
 import { SceneEngine, ToolError } from '../engine/scene.js';
@@ -10,6 +10,8 @@ import {
   type ToolEvent,
   type ToolName,
   type ToolResponse,
+  type Scene,
+  sceneSchema,
 } from '../shared/schema.js';
 import { capture, type Capture } from './capture.js';
 import { exportScene } from './export.js';
@@ -40,6 +42,28 @@ export async function atomicJson(file: string, value: unknown): Promise<void> {
   await rename(temp, file);
 }
 const envelope = z.object({ tool: z.string(), arguments: z.unknown() }).strict();
+const sceneChangingTools = new Set<ToolName>([
+  'create_object',
+  'update_object',
+  'delete_object',
+  'set_camera',
+  'set_lighting',
+  'load_scene',
+]);
+
+interface RecoveryPointer {
+  version: 1;
+  executionId: string;
+  previousExecutionId?: string;
+}
+
+interface RecoveryRecord {
+  version: 1;
+  executionId: string;
+  previousExecutionId?: string;
+  scene: Scene;
+  event: ToolEvent;
+}
 
 export class ToolService {
   readonly engine = new SceneEngine();
@@ -50,6 +74,11 @@ export class ToolService {
   readonly runDir: string;
   private listeners = new Set<(message: LiveMessage) => void>();
   private queue: Promise<unknown> = Promise.resolve();
+  private recoveryExecutionId?: string;
+  private recoveryPreviousExecutionId?: string;
+  recoveryError?: { code: string; message: string };
+  private recoveredFrom?: { executionId: string; runId: string; sceneRevision: number };
+  private pendingRecoveryProjection = false;
   constructor(readonly options: ServiceOptions) {
     if (!/^[a-zA-Z0-9][\w-]{0,99}$/.test(options.runId)) throw new Error('Invalid RUN_ID');
     this.runDir = path.resolve(options.artifactsDir, options.runId);
@@ -57,6 +86,12 @@ export class ToolService {
   }
   async init(): Promise<void> {
     await mkdir(path.join(this.options.dataDir, 'scenes'), { recursive: true });
+    try {
+      await this.recoverCommittedScene();
+    } catch (error) {
+      if (!(error instanceof ToolError) || error.code !== 'RECOVERY_CORRUPT') throw error;
+      this.recoveryError = { code: error.code, message: error.message };
+    }
     await mkdir(path.dirname(this.runDir), { recursive: true });
     try {
       await mkdir(this.runDir);
@@ -68,6 +103,204 @@ export class ToolService {
     await mkdir(path.join(this.runDir, 'checkpoints'));
     await writeFile(path.join(this.runDir, 'events.jsonl'), '');
     await writeFile(path.join(this.runDir, 'reviews.jsonl'), '');
+    await atomicJson(path.join(this.runDir, 'run.json'), {
+      runId: this.options.runId,
+      workspaceId: this.options.workspaceId ?? 'default',
+      startedAt: new Date().toISOString(),
+      recovery: this.recoveryError
+        ? { status: 'error', ...this.recoveryError }
+        : this.recoveredFrom
+          ? { status: 'restored', ...this.recoveredFrom }
+          : { status: 'none' },
+    });
+  }
+  private get recoveryDir(): string {
+    return path.join(this.options.dataDir, 'recovery');
+  }
+  private get recoverySnapshotsDir(): string {
+    return path.join(this.recoveryDir, 'snapshots');
+  }
+  private get recoveryPointerPath(): string {
+    return path.join(this.recoveryDir, 'current.json');
+  }
+  private recoverySnapshotPath(executionId: string): string {
+    return path.join(this.recoverySnapshotsDir, `${executionId}.json`);
+  }
+  private async readRecoveryPointer(): Promise<RecoveryPointer | undefined> {
+    let value: unknown;
+    try {
+      value = JSON.parse(await readFile(this.recoveryPointerPath, 'utf8'));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+      if (error instanceof SyntaxError)
+        throw new ToolError(
+          'RECOVERY_CORRUPT',
+          'The committed scene recovery pointer is not valid JSON.',
+        );
+      throw error;
+    }
+    if (
+      typeof value !== 'object' ||
+      value === null ||
+      !('version' in value) ||
+      value.version !== 1 ||
+      !('executionId' in value) ||
+      typeof value.executionId !== 'string' ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+        value.executionId,
+      )
+    )
+      throw new ToolError('RECOVERY_CORRUPT', 'The committed scene recovery pointer is invalid.');
+    return value as RecoveryPointer;
+  }
+  private async readRecoveryRecord(pointer: RecoveryPointer): Promise<RecoveryRecord> {
+    let value: unknown;
+    try {
+      value = JSON.parse(await readFile(this.recoverySnapshotPath(pointer.executionId), 'utf8'));
+    } catch (error) {
+      throw new ToolError(
+        'RECOVERY_CORRUPT',
+        `Cannot read committed scene snapshot '${pointer.executionId}': ${String(error)}`,
+      );
+    }
+    if (
+      typeof value !== 'object' ||
+      value === null ||
+      !('version' in value) ||
+      value.version !== 1 ||
+      !('executionId' in value) ||
+      value.executionId !== pointer.executionId ||
+      !('scene' in value) ||
+      !('event' in value)
+    )
+      throw new ToolError('RECOVERY_CORRUPT', 'The committed scene recovery snapshot is invalid.');
+    const scene = sceneSchema.safeParse(value.scene);
+    const event = value.event as ToolEvent;
+    if (
+      !scene.success ||
+      !event ||
+      event.executionId !== pointer.executionId ||
+      event.success !== true ||
+      event.sceneRevision !== scene.data.revision ||
+      !sceneChangingTools.has(event.tool as ToolName) ||
+      !/^[a-zA-Z0-9][\w-]{0,99}$/.test(event.runId) ||
+      (this.options.workspaceId &&
+        event.workspaceId !== undefined &&
+        event.workspaceId !== this.options.workspaceId)
+    )
+      throw new ToolError(
+        'RECOVERY_CORRUPT',
+        'The committed scene recovery record failed validation.',
+      );
+    return {
+      version: 1,
+      executionId: pointer.executionId,
+      scene: scene.data,
+      event,
+    };
+  }
+  private async ensureCommittedEvent(record: RecoveryRecord): Promise<void> {
+    const runDir = path.resolve(this.options.artifactsDir, record.event.runId);
+    if (path.dirname(runDir) !== path.resolve(this.options.artifactsDir))
+      throw new ToolError(
+        'RECOVERY_CORRUPT',
+        'The committed scene event points outside run storage.',
+      );
+    await mkdir(runDir, { recursive: true });
+    const eventPath = path.join(runDir, 'events.jsonl');
+    const content = await readFile(eventPath, 'utf8').catch((error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') return '';
+      throw error;
+    });
+    let normalizedContent = content;
+    if (content && !content.endsWith('\n')) {
+      const lastLine = content.slice(content.lastIndexOf('\n') + 1);
+      try {
+        JSON.parse(lastLine);
+        normalizedContent = `${content}\n`;
+      } catch {
+        normalizedContent = content.slice(0, content.lastIndexOf('\n') + 1);
+      }
+      const temporary = `${eventPath}.${randomUUID()}.tmp`;
+      await writeFile(temporary, normalizedContent);
+      await rename(temporary, eventPath);
+    }
+    const alreadyRecorded = normalizedContent.split('\n').some((line) => {
+      if (!line) return false;
+      try {
+        return (JSON.parse(line) as { executionId?: string }).executionId === record.executionId;
+      } catch {
+        return false;
+      }
+    });
+    if (!alreadyRecorded) await appendFile(eventPath, `${JSON.stringify(record.event)}\n`);
+  }
+  private async pruneRecoverySnapshots(
+    keepExecutionIds: Array<string | undefined> = [],
+  ): Promise<void> {
+    const keep = new Set(keepExecutionIds.filter((id): id is string => Boolean(id)));
+    for (const entry of await readdir(this.recoverySnapshotsDir, { withFileTypes: true }).catch(
+      () => [],
+    )) {
+      if (entry.isFile() && entry.name.endsWith('.json') && !keep.has(entry.name.slice(0, -5)))
+        await rm(path.join(this.recoverySnapshotsDir, entry.name), { force: true });
+    }
+  }
+  private async recoverCommittedScene(): Promise<void> {
+    await mkdir(this.recoverySnapshotsDir, { recursive: true });
+    const pointer = await this.readRecoveryPointer();
+    if (!pointer) {
+      const snapshots = (await readdir(this.recoverySnapshotsDir)).filter((file) =>
+        file.endsWith('.json'),
+      );
+      if (snapshots.length)
+        throw new ToolError(
+          'RECOVERY_CORRUPT',
+          'Scene recovery snapshots exist, but the committed scene recovery pointer is missing.',
+        );
+      return;
+    }
+    const record = await this.readRecoveryRecord(pointer);
+    this.engine.restore(record.scene);
+    this.recoveryExecutionId = pointer.executionId;
+    this.recoveryPreviousExecutionId = pointer.previousExecutionId;
+    this.recoveredFrom = {
+      executionId: pointer.executionId,
+      runId: record.event.runId,
+      sceneRevision: record.scene.revision,
+    };
+    await this.ensureCommittedEvent(record);
+    await this.pruneRecoverySnapshots([pointer.executionId, pointer.previousExecutionId]);
+  }
+  private async reconcilePendingRecovery(): Promise<void> {
+    if (!this.pendingRecoveryProjection || !this.recoveryExecutionId) return;
+    const pointer = await this.readRecoveryPointer();
+    if (!pointer || pointer.executionId !== this.recoveryExecutionId)
+      throw new ToolError('RECOVERY_CORRUPT', 'The committed scene pointer changed unexpectedly.');
+    const record = await this.readRecoveryRecord(pointer);
+    await this.ensureCommittedEvent(record);
+    await this.pruneRecoverySnapshots([pointer.executionId, pointer.previousExecutionId]);
+    this.pendingRecoveryProjection = false;
+  }
+  private async commitScene(event: ToolEvent): Promise<void> {
+    const scene = this.engine.snapshot();
+    const previousExecutionId = this.recoveryExecutionId;
+    const record: RecoveryRecord = {
+      version: 1,
+      executionId: event.executionId,
+      ...(previousExecutionId ? { previousExecutionId } : {}),
+      scene,
+      event,
+    };
+    await mkdir(this.recoverySnapshotsDir, { recursive: true });
+    await atomicJson(this.recoverySnapshotPath(event.executionId), record);
+    await atomicJson(this.recoveryPointerPath, {
+      version: 1,
+      executionId: event.executionId,
+      ...(previousExecutionId ? { previousExecutionId } : {}),
+    } satisfies RecoveryPointer);
+    this.recoveryPreviousExecutionId = previousExecutionId;
+    this.recoveryExecutionId = event.executionId;
   }
   subscribe(listener: (message: LiveMessage) => void): () => void {
     this.listeners.add(listener);
@@ -90,6 +323,19 @@ export class ToolService {
   private async run(input: unknown, rejection?: ToolError): Promise<ToolResponse> {
     const executionId = randomUUID();
     const timestamp = new Date().toISOString();
+    try {
+      await this.reconcilePendingRecovery();
+    } catch (error) {
+      return {
+        success: false,
+        executionId,
+        sceneRevision: this.engine.snapshot().revision,
+        error: {
+          code: error instanceof ToolError ? error.code : 'RECOVERY_WRITE_FAILED',
+          message: `Cannot reconcile the last committed scene operation before processing this command: ${String(error)}`,
+        },
+      };
+    }
     const previous = this.engine.snapshot();
     let tool = 'invalid_request';
     let args: unknown = input;
@@ -100,6 +346,24 @@ export class ToolService {
       tool = request.tool;
       args = request.arguments;
       if (rejection) throw rejection;
+      if (
+        this.recoveryError &&
+        [
+          'create_object',
+          'update_object',
+          'delete_object',
+          'set_camera',
+          'set_lighting',
+          'load_scene',
+          'save_scene',
+          'render_scene',
+          'export_scene',
+        ].includes(tool)
+      )
+        throw new ToolError(
+          'RECOVERY_UNAVAILABLE',
+          `Scene recovery needs repair before '${tool}' can run: ${this.recoveryError.message}`,
+        );
       if (!Object.hasOwn(toolSchemas, tool))
         throw new ToolError(
           'UNKNOWN_TOOL',
@@ -164,7 +428,7 @@ export class ToolService {
         // Keep command responses available if optional metadata cannot be read.
       }
     }
-    const event: ToolEvent = {
+    let event: ToolEvent = {
       ...response,
       timestamp,
       tool,
@@ -172,10 +436,61 @@ export class ToolService {
       runId: this.options.runId,
       ...(this.options.workspaceId ? { workspaceId: this.options.workspaceId } : {}),
     };
+    let sceneCommit = false;
+    if (response.success && sceneChangingTools.has(tool as ToolName)) {
+      try {
+        await this.commitScene(event);
+        sceneCommit = true;
+      } catch (error) {
+        this.engine.restore(previous);
+        await this.pruneRecoverySnapshots([
+          this.recoveryExecutionId,
+          this.recoveryPreviousExecutionId,
+        ]).catch((pruneError) =>
+          console.error('Cannot prune uncommitted scene recovery snapshots', pruneError),
+        );
+        response = {
+          success: false,
+          executionId,
+          sceneRevision: previous.revision,
+          error: {
+            code: 'RECOVERY_WRITE_FAILED',
+            message: `Cannot commit scene recovery state; the scene change was rolled back: ${String(error)}`,
+          },
+          ...(response.metadataRevision !== undefined
+            ? { metadataRevision: response.metadataRevision }
+            : {}),
+        };
+        event = {
+          ...response,
+          timestamp,
+          tool,
+          arguments: args,
+          runId: this.options.runId,
+          ...(this.options.workspaceId ? { workspaceId: this.options.workspaceId } : {}),
+        };
+      }
+    }
     try {
       await appendFile(path.join(this.runDir, 'events.jsonl'), `${JSON.stringify(event)}\n`);
       this.events.push(event);
+      if (sceneCommit) {
+        this.pendingRecoveryProjection = false;
+        await this.pruneRecoverySnapshots([
+          event.executionId,
+          this.recoveryPreviousExecutionId,
+        ]).catch((error) => console.error('Cannot prune old scene recovery snapshots', error));
+      }
     } catch (error) {
+      if (sceneCommit) {
+        // The pointer and snapshot are the commit point. Keep the accepted scene and repair the
+        // append-only event projection before another operation or during the next startup.
+        this.events.push(event);
+        this.pendingRecoveryProjection = true;
+        console.error('Cannot project committed scene event; it will be reconciled', error);
+        this.publish({ type: 'update', executionId, sceneRevision: response.sceneRevision });
+        return response;
+      }
       this.engine.restore(previous);
       if (tool === 'promote_asset') {
         const promoted = dispatchedResult as { asset?: { id?: string } } | undefined;

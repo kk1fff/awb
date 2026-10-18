@@ -35,6 +35,7 @@ export interface WorkspaceContext {
   createdAt: string;
   lastRunId?: string;
   runId?: string;
+  recoveryError?: { code: string; message: string };
   currentScene: { available: boolean; revision?: number; objectCount?: number };
   latestCheckpoint?: {
     id: string;
@@ -59,6 +60,7 @@ export interface WorkspaceContext {
 export interface WorkspaceManifest extends Omit<
   WorkspaceContext,
   | 'runId'
+  | 'recoveryError'
   | 'currentScene'
   | 'latestCheckpoint'
   | 'recentActivity'
@@ -518,6 +520,9 @@ export class WorkspaceManager {
 
   async context(id: string): Promise<WorkspaceContext> {
     const manifest = await this.readManifest(id);
+    // Context is an explicit agent entry point; opening the workspace lets it report recovery
+    // health as well as persisted metadata. Listing workspaces remains lazy and does not open runs.
+    await this.get(id);
     return this.toContext(manifest);
   }
 
@@ -673,6 +678,7 @@ export class WorkspaceManager {
       updatedAt,
       createdAt,
       ...(runId ? { runId } : {}),
+      ...(active?.recoveryError ? { recoveryError: active.recoveryError } : {}),
       currentScene: currentSnapshot
         ? {
             available: true,

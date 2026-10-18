@@ -49,7 +49,13 @@ async function registerServiceRoutes(router: Router, service: ToolService, works
     },
   );
   router.get('/health', (_req, res) =>
-    res.json({ ready: true, runId: service.options.runId, workspaceId, toolVersion: '2' }),
+    res.json({
+      ready: true,
+      runId: service.options.runId,
+      workspaceId,
+      toolVersion: '2',
+      ...(service.recoveryError ? { recoveryError: service.recoveryError } : {}),
+    }),
   );
   router.get('/state', (_req, res) => res.json(service.engine.snapshot()));
   router.get('/assets/:id/file', async (req, res, next) => {

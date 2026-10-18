@@ -222,6 +222,8 @@ describe('isolated workspaces', () => {
     const reopenedContext = (await (await fetch(`${base}${api(a.id, '/context')}`)).json()) as {
       context: {
         runId: string;
+        metadataRevision: number;
+        currentTask: string;
         currentScene: { available: boolean; revision?: number; objectCount?: number };
         latestCheckpoint?: { runId: string; sceneRevision: number; screenshotUrl?: string };
         recentActivity: Array<{ runId: string; tool: string }>;
@@ -230,7 +232,9 @@ describe('isolated workspaces', () => {
     };
     expect(reopenedContext.context).toMatchObject({
       runId: newHealth.runId,
-      currentScene: { available: true, revision: 1, objectCount: 1 },
+      metadataRevision: 1,
+      currentTask: 'Model siding',
+      currentScene: { available: true, revision: 2, objectCount: 1 },
       latestCheckpoint: { runId: a.runId, screenshotUrl: expect.any(String) },
       availableSaves: ['same'],
     });
