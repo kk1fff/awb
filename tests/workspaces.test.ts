@@ -35,11 +35,17 @@ describe('isolated workspaces', () => {
       const response = await request('/api/workspaces', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name }),
+        body: JSON.stringify({ name, goal: `Build ${name}` }),
       });
       expect(response.status).toBe(201);
       return ((await response.json()) as { workspace: { id: string; runId: string } }).workspace;
     };
+    const missingGoal = await request('/api/workspaces', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Missing brief' }),
+    });
+    expect(missingGoal.status).toBe(400);
     const a = await createWorkspace('Specialist A');
     const b = await createWorkspace('Specialist B');
     const api = (id: string, suffix: string) => `/api/workspaces/${id}${suffix}`;
@@ -47,6 +53,19 @@ describe('isolated workspaces', () => {
       workspace: { active: boolean; runId: string };
     };
     expect(described.workspace).toMatchObject({ active: true, runId: a.runId });
+    const contextBefore = (await (await request(api(a.id, '/context'))).json()) as {
+      context: { metadataRevision: number; workStatus: string };
+    };
+    expect(contextBefore.context).toMatchObject({ metadataRevision: 0, workStatus: 'planned' });
+    const contextAfterResponse = await request(api(a.id, '/context'), {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ currentTask: 'Model siding', workStatus: 'working' }),
+    });
+    expect(contextAfterResponse.status).toBe(200);
+    expect(await contextAfterResponse.json()).toMatchObject({
+      context: { metadataRevision: 1, currentTask: 'Model siding', workStatus: 'working' },
+    });
     const listed = (await (await request('/api/workspaces')).json()) as {
       workspaces: Array<{ id: string }>;
     };
@@ -187,9 +206,7 @@ describe('isolated workspaces', () => {
     expect(reopenedList.workspaces.find((workspace) => workspace.id === a.id)).toMatchObject({
       active: false,
     });
-    expect(
-      reopenedList.workspaces.find((workspace) => workspace.id === a.id)?.runId,
-    ).toBeUndefined();
+    expect(reopenedList.workspaces.find((workspace) => workspace.id === a.id)?.runId).toBe(a.runId);
     const newHealth = (await (await fetch(`${base}${api(a.id, '/health')}`)).json()) as {
       runId: string;
     };
@@ -202,6 +219,27 @@ describe('isolated workspaces', () => {
     const loadedResponse = (await loaded.json()) as ToolResponse;
     expect(loadedResponse.success).toBe(true);
     expect((loadedResponse.result as Scene).objects[0]?.name).toBe('A only');
+    const reopenedContext = (await (await fetch(`${base}${api(a.id, '/context')}`)).json()) as {
+      context: {
+        runId: string;
+        currentScene: { available: boolean; revision?: number; objectCount?: number };
+        latestCheckpoint?: { runId: string; sceneRevision: number; screenshotUrl?: string };
+        recentActivity: Array<{ runId: string; tool: string }>;
+        availableSaves: string[];
+      };
+    };
+    expect(reopenedContext.context).toMatchObject({
+      runId: newHealth.runId,
+      currentScene: { available: true, revision: 1, objectCount: 1 },
+      latestCheckpoint: { runId: a.runId, screenshotUrl: expect.any(String) },
+      availableSaves: ['same'],
+    });
+    expect(reopenedContext.context.recentActivity).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ runId: a.runId }),
+        expect.objectContaining({ runId: newHealth.runId, tool: 'load_scene' }),
+      ]),
+    );
     const promotedAfterRestart = await fetch(`${base}${api(b.id, '/tools')}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -224,6 +262,22 @@ describe('isolated workspaces', () => {
     expect(
       (await fetch(`${base}/api/workspaces/../../../../runs/default-one/events.jsonl`)).status,
     ).not.toBe(200);
+    const defaultContextUpdate = await fetch(`${base}/api/tools`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        tool: 'update_workspace_context',
+        arguments: { currentTask: 'Legacy default remains reachable', workStatus: 'working' },
+      }),
+    });
+    expect(await defaultContextUpdate.json()).toMatchObject({
+      success: true,
+      sceneRevision: 0,
+      metadataRevision: 1,
+    });
+    expect(await (await fetch(`${base}/api/workspaces/default/context`)).json()).toMatchObject({
+      context: { currentTask: 'Legacy default remains reachable', workStatus: 'working' },
+    });
 
     const failingService = await restarted.workspaces.get(b.id);
     const eventPath = path.join(failingService.runDir, 'events.jsonl');

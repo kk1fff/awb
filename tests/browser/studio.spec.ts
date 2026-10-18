@@ -42,7 +42,7 @@ test('@smoke scopes the browser viewport and public tools to a selected workspac
   request,
 }) => {
   const createdWorkspace = await request.post('/api/workspaces', {
-    data: { name: 'Browser specialist' },
+    data: { name: 'Browser specialist', goal: 'Build a scoped browser test scene' },
   });
   expect(createdWorkspace.status()).toBe(201);
   const { workspace } = (await createdWorkspace.json()) as {
@@ -74,12 +74,28 @@ test('@smoke scopes the browser viewport and public tools to a selected workspac
   expect((await request.get(imageUrl)).ok()).toBe(true);
 });
 
+test('@smoke requires a goal when creating a workspace from the UI', async ({ page, request }) => {
+  await page.goto('/');
+  const answers = ['Goal capture test', 'Build a visible garden scene'];
+  page.on('dialog', async (dialog) => {
+    await dialog.accept(answers.shift());
+  });
+  await page.getByRole('button', { name: '＋ Workspace' }).click();
+  await expect(page).toHaveURL(/workspace=/);
+  const workspaceId = new URL(page.url()).searchParams.get('workspace')!;
+  await expect(page.getByRole('combobox', { name: 'Workspace' })).toHaveValue(workspaceId);
+  const context = await request.get(`/api/workspaces/${workspaceId}/context`);
+  expect(await context.json()).toMatchObject({
+    context: { name: 'Goal capture test', goal: 'Build a visible garden scene' },
+  });
+});
+
 test('@smoke clears a scoped asset picker after import and allows selecting the same file again', async ({
   page,
   request,
 }) => {
   const createdWorkspace = await request.post('/api/workspaces', {
-    data: { name: 'Scoped asset importer' },
+    data: { name: 'Scoped asset importer', goal: 'Test local asset import reset' },
   });
   expect(createdWorkspace.status()).toBe(201);
   const { workspace } = (await createdWorkspace.json()) as {

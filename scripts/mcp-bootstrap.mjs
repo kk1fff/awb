@@ -6,6 +6,16 @@ import { fileURLToPath } from 'node:url';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const processes = [];
 const quiet = { cwd: root, stdio: ['ignore', 'ignore', 'inherit'] };
+const workspaceId = process.env.SCENE_WORKSPACE_ID;
+if (
+  !workspaceId ||
+  !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(workspaceId)
+) {
+  process.stderr.write(
+    'Fieldwork MCP needs SCENE_WORKSPACE_ID set to a workspace UUID. Run `npm run workspace -- create --name "My workspace" --goal "..."` (the setup command works directly from local DATA_DIR when no API is running), then configure and reconnect this MCP process with the returned UUID. The legacy default workspace is available through the web UI and HTTP API only.\n',
+  );
+  process.exit(2);
+}
 
 function run(command, args) {
   const result = spawnSync(command, args, quiet);

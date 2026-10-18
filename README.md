@@ -78,7 +78,9 @@ Generated output is ignored by Git. Keep artifacts to revisit a run; the live AP
 | `ARTIFACTS_DIR`      | `artifacts/runs`                         | Run directory parent                                                 |
 | `RUN_ID`             | Timestamp + random suffix                | New run identifier                                                   |
 | `SCENE_API`          | `http://127.0.0.1:3001`                  | CLI / MCP API base                                                   |
-| `SCENE_WORKSPACE_ID` | `default`                                | CLI / MCP logical workspace context                                  |
+| `SCENE_WORKSPACE_ID` | Required UUID for MCP / scene CLI        | Binds one MCP or scene CLI process to an isolated workspace          |
+
+Create a workspace with `npm run workspace -- create --name "House designer" --goal "Build a photorealistic PNW house"`. The command uses a running `SCENE_API` when available or writes directly to local `DATA_DIR` when the app is stopped. Set the returned UUID as `SCENE_WORKSPACE_ID` for that MCP or scene CLI process. Use `npm run workspace -- list` to inspect workspace metadata. The legacy default remains available through the browser and HTTP `/api/*` routes.
 
 For a custom development API port, update the Vite proxy environment as described in the tool guide.
 

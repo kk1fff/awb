@@ -89,13 +89,21 @@ describe('public tool API', () => {
       expect(guide.toString()).toContain(phrase);
 
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-    const mcpServer = createFieldworkMcpServer({ api: base });
+    const createWorkspaceResponse = await fetch(`${base}/api/workspaces`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'MCP instruction test', goal: 'Verify startup instructions' }),
+    });
+    const workspaceId = ((await createWorkspaceResponse.json()) as { workspace: { id: string } })
+      .workspace.id;
+    const mcpServer = createFieldworkMcpServer({ api: base, workspaceId });
     const client = new Client({ name: 'bootstrap-test', version: '1.0.0' });
     try {
       await mcpServer.connect(serverTransport);
       await client.connect(clientTransport);
       expect(client.getInstructions()).toBe(fieldworkInstructions);
       expect(client.getInstructions()).toContain('docs/designer-agent-bootstrap.md');
+      expect(client.getInstructions()).toContain('SCENE_WORKSPACE_ID');
       expect(client.getInstructions()).toContain('fresh scene');
     } finally {
       await client.close();
@@ -105,7 +113,7 @@ describe('public tool API', () => {
 
   it('discovers every tool and exercises create, inspect, list, patch and delete', async () => {
     const docs = await get<{ tools: Record<string, unknown> }>('/api/tools');
-    expect(Object.keys(docs.tools)).toHaveLength(14);
+    expect(Object.keys(docs.tools)).toHaveLength(16);
     const created = await call('create_object', {
       name: 'Tree',
       type: 'cylinder',

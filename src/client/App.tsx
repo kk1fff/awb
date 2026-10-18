@@ -208,10 +208,12 @@ export function App() {
             onClick={async () => {
               const name = window.prompt('Name for the new isolated workspace');
               if (!name?.trim()) return;
+              const goal = window.prompt('Workspace goal');
+              if (!goal?.trim()) return;
               const response = await fetch('/api/workspaces', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ name }),
+                body: JSON.stringify({ name, goal }),
               });
               const value = (await response.json()) as {
                 workspace?: { id: string };

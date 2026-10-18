@@ -122,6 +122,18 @@ const saveName = z
   .string()
   .regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$/, 'Use 1–80 letters, digits, hyphens or underscores');
 export const toolSchemas = {
+  get_workspace_context: z.object({}).strict(),
+  update_workspace_context: z
+    .object({
+      goal: z.string().trim().min(1).max(2000).optional(),
+      acceptanceCriteria: z.array(z.string().trim().min(1).max(500)).max(30).optional(),
+      constraints: z.array(z.string().trim().min(1).max(500)).max(30).optional(),
+      currentTask: z.string().trim().max(2000).optional(),
+      workStatus: z.enum(['planned', 'working', 'blocked', 'needs_review', 'done']).optional(),
+      summary: z.string().trim().max(4000).optional(),
+    })
+    .strict()
+    .refine((value) => Object.keys(value).length > 0, 'Provide at least one context field.'),
   create_object: properties
     .partial()
     .extend({ name: properties.shape.name, type: objectType, assetId: assetId.optional() })
@@ -229,6 +241,7 @@ export interface ToolResponse {
   success: boolean;
   executionId: string;
   sceneRevision: number;
+  metadataRevision?: number;
   result?: unknown;
   error?: { code: string; message: string; details?: unknown };
 }

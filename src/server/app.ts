@@ -161,10 +161,46 @@ export async function createApp(options: ServiceOptions & { clientDir?: string }
       next(error);
     }
   });
+  app.get('/api/workspaces/:workspaceId/context', async (req, res, next) => {
+    try {
+      res.json({ context: await manager.context(String(req.params.workspaceId)) });
+    } catch (error) {
+      next(error);
+    }
+  });
+  app.patch('/api/workspaces/:workspaceId/context', async (req, res, next) => {
+    try {
+      const schema = z
+        .object({
+          goal: z.string().trim().min(1).max(2000).optional(),
+          acceptanceCriteria: z.array(z.string().trim().min(1).max(500)).max(30).optional(),
+          constraints: z.array(z.string().trim().min(1).max(500)).max(30).optional(),
+          currentTask: z.string().trim().max(2000).optional(),
+          workStatus: z.enum(['planned', 'working', 'blocked', 'needs_review', 'done']).optional(),
+          summary: z.string().trim().max(4000).optional(),
+        })
+        .strict()
+        .refine((value) => Object.keys(value).length > 0, 'Provide at least one context field.');
+      res.json({
+        context: await manager.updateContext(
+          String(req.params.workspaceId),
+          schema.parse(req.body),
+        ),
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
   app.post('/api/workspaces', async (req, res, next) => {
     try {
       const schema = z
-        .object({ name: z.string().trim().min(1).max(100), owner: z.string().max(120).optional() })
+        .object({
+          name: z.string().trim().min(1).max(100),
+          owner: z.string().max(120).optional(),
+          goal: z.string().trim().min(1).max(2000),
+          acceptanceCriteria: z.array(z.string().trim().min(1).max(500)).max(30).optional(),
+          constraints: z.array(z.string().trim().min(1).max(500)).max(30).optional(),
+        })
         .strict();
       const input = schema.parse(req.body);
       res.status(201).json({ workspace: await manager.create(input) });

@@ -31,6 +31,8 @@ export interface ServiceOptions {
   capture?: Capture;
   workspaceId?: string;
   promoteAsset?: (args: Record<string, unknown>) => Promise<unknown>;
+  getWorkspaceContext?: () => Promise<unknown>;
+  updateWorkspaceContext?: (patch: Record<string, unknown>) => Promise<unknown>;
 }
 export async function atomicJson(file: string, value: unknown): Promise<void> {
   const temp = `${file}.${randomUUID()}.tmp`;
@@ -117,6 +119,13 @@ export class ToolService {
         executionId,
         sceneRevision: this.engine.snapshot().revision,
         result,
+        ...(this.options.getWorkspaceContext
+          ? {
+              metadataRevision: (
+                (await this.options.getWorkspaceContext()) as { metadataRevision?: number }
+              ).metadataRevision,
+            }
+          : {}),
       };
     } catch (error) {
       this.engine.restore(previous);
@@ -145,6 +154,15 @@ export class ToolService {
               : {}),
         },
       };
+    }
+    if (this.options.getWorkspaceContext && response.metadataRevision === undefined) {
+      try {
+        response.metadataRevision = (
+          (await this.options.getWorkspaceContext()) as { metadataRevision?: number }
+        ).metadataRevision;
+      } catch {
+        // Keep command responses available if optional metadata cannot be read.
+      }
     }
     const event: ToolEvent = {
       ...response,
@@ -198,6 +216,19 @@ export class ToolService {
           'Asset promotion is unavailable in this workspace.',
         );
       return this.options.promoteAsset(args);
+    }
+    if (tool === 'get_workspace_context') {
+      if (!this.options.getWorkspaceContext)
+        throw new ToolError('WORKSPACE_CONTEXT_UNAVAILABLE', 'Workspace context is unavailable.');
+      return this.options.getWorkspaceContext();
+    }
+    if (tool === 'update_workspace_context') {
+      if (!this.options.updateWorkspaceContext)
+        throw new ToolError(
+          'WORKSPACE_CONTEXT_UNAVAILABLE',
+          'Workspace context cannot be updated.',
+        );
+      return this.options.updateWorkspaceContext(args);
     }
     if (tool === 'search_assets')
       return this.assets.search(
