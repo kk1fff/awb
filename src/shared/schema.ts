@@ -180,6 +180,7 @@ export const toolSchemas = {
     .strict(),
   render_scene: z.object({ label: z.string().trim().min(1).max(120).optional() }).strict(),
   export_scene: z.object({}).strict(),
+  export_scene_bundle: z.object({}).strict(),
   save_scene: z.object({ name: saveName }).strict(),
   load_scene: z.object({ name: saveName }).strict(),
   promote_asset: z

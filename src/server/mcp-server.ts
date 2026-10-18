@@ -22,6 +22,8 @@ const descriptions: Record<ToolName, string> = {
     'Update ambient/directional lighting, shadow softness, or visible background mode/color.',
   render_scene: 'Capture a PNG checkpoint of the current scene for visual inspection.',
   export_scene: 'Export visible scene meshes and materials as a downloadable GLB file.',
+  export_scene_bundle:
+    'Export a portable ZIP containing the editable scene, referenced local assets, same-revision PNG preview, GLB, and provenance metadata.',
   save_scene: 'Save the current editable scene under a name.',
   load_scene: 'Load a previously saved editable scene by name.',
   promote_asset:

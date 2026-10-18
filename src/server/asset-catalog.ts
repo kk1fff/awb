@@ -123,6 +123,11 @@ export class AssetCatalog {
     fileName: string;
     tags: string[];
     data: Buffer;
+    bounds?: AssetRecord['bounds'];
+    description?: string;
+    baseColor?: string;
+    roughness?: number;
+    metalness?: number;
   }): Promise<AssetRecord> {
     const next = this.writeQueue.then(() => this.writeLocalAsset(input));
     this.writeQueue = next.catch(() => undefined);
@@ -160,6 +165,11 @@ export class AssetCatalog {
     fileName: string;
     tags: string[];
     data: Buffer;
+    bounds?: AssetRecord['bounds'];
+    description?: string;
+    baseColor?: string;
+    roughness?: number;
+    metalness?: number;
   }): Promise<AssetRecord> {
     const name = input.name.trim();
     if (!name || name.length > 120)
@@ -198,15 +208,21 @@ export class AssetCatalog {
     const asset: AssetRecord = {
       id,
       name,
-      description: `Imported local ${validated.kind} asset.`,
+      description: input.description ?? `Imported local ${validated.kind} asset.`,
       kind: validated.kind,
       tags: [...new Set(input.tags.map((tag) => tag.trim()).filter(Boolean))],
       source: 'local',
       originalFileName,
       format: validated.format,
       file: relativeFile,
-      ...(validated.bounds ? { bounds: validated.bounds } : {}),
-      ...(validated.kind === 'material' ? { roughness: 0.86, metalness: 0 } : {}),
+      ...((input.bounds ?? validated.bounds) ? { bounds: input.bounds ?? validated.bounds } : {}),
+      ...(validated.kind === 'material'
+        ? {
+            roughness: input.roughness ?? 0.86,
+            metalness: input.metalness ?? 0,
+            ...(input.baseColor ? { baseColor: input.baseColor } : {}),
+          }
+        : {}),
     };
     try {
       const all = await this.records();

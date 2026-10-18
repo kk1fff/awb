@@ -6,9 +6,37 @@ import { toolSchemas } from '../shared/schema.js';
 import { ToolService, type ServiceOptions } from './service.js';
 import { WorkspaceManager } from './workspaces.js';
 import { ToolError } from '../engine/scene.js';
+import { importSceneBundle } from './scene-bundle.js';
 
 async function registerServiceRoutes(router: Router, service: ToolService, workspaceId: string) {
   const scoped = workspaceId !== 'default';
+  router.post(
+    '/bundles/import',
+    express.raw({ type: ['application/zip', 'application/octet-stream'], limit: '250mb' }),
+    async (req, res, next) => {
+      try {
+        if (service.recoveryError?.code === 'BUNDLE_IMPORT_RECOVERY_FAILED')
+          throw new ToolError(
+            'BUNDLE_IMPORT_RECOVERY_FAILED',
+            `Bundle import recovery needs repair before another import can run: ${service.recoveryError.message}`,
+          );
+        if (!Buffer.isBuffer(req.body))
+          throw new ToolError('INVALID_BUNDLE', 'Upload the bundle ZIP as application/zip.');
+        const sceneName = req.header('x-scene-name')?.trim();
+        if (!sceneName)
+          throw new ToolError(
+            'INVALID_SCENE_NAME',
+            'Provide the target save name in X-Scene-Name.',
+          );
+        const result = await service.serialize(() =>
+          importSceneBundle(service, req.body as Buffer, sceneName),
+        );
+        res.status(201).json(result);
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
   router.post(
     '/assets/import',
     express.raw({ type: 'application/octet-stream', limit: '100mb' }),
@@ -36,12 +64,14 @@ async function registerServiceRoutes(router: Router, service: ToolService, works
           );
         if (!Buffer.isBuffer(req.body))
           throw new ToolError('INVALID_ASSET_FILE', 'Upload a file as application/octet-stream.');
-        const asset = await service.assets.importLocalAsset({
-          name: decode(req.header('x-asset-name'), 'asset name'),
-          fileName: decode(req.header('x-asset-file-name'), 'file name'),
-          tags,
-          data: req.body,
-        });
+        const asset = await service.serialize(() =>
+          service.assets.importLocalAsset({
+            name: decode(req.header('x-asset-name'), 'asset name'),
+            fileName: decode(req.header('x-asset-file-name'), 'file name'),
+            tags,
+            data: req.body as Buffer,
+          }),
+        );
         res.status(201).json({ asset });
       } catch (error) {
         next(error);
@@ -263,6 +293,33 @@ export async function createApp(options: ServiceOptions & { clientDir?: string }
     app.get('/', (_req, res) => res.sendFile(path.join(options.clientDir!, 'index.html')));
   }
   const errors: ErrorRequestHandler = async (err, req, res, _next) => {
+    if (req.path.endsWith('/bundles/import')) {
+      const tooLarge =
+        (err as { type?: string; status?: number }).type === 'entity.too.large' ||
+        (err as { status?: number }).status === 413;
+      const code = tooLarge
+        ? 'BUNDLE_TOO_LARGE'
+        : err instanceof ToolError
+          ? err.code
+          : err instanceof z.ZodError
+            ? 'INVALID_BUNDLE'
+            : 'INVALID_BUNDLE';
+      res
+        .status(
+          tooLarge ? 413 : err instanceof ToolError && err.code.endsWith('_COLLISION') ? 409 : 400,
+        )
+        .json({
+          error: {
+            code,
+            message: tooLarge
+              ? 'Bundles must be 250 MiB or smaller.'
+              : err instanceof Error
+                ? err.message
+                : String(err),
+          },
+        });
+      return;
+    }
     if (req.path.endsWith('/assets/import')) {
       const tooLarge =
         (err as { type?: string; status?: number }).type === 'entity.too.large' ||

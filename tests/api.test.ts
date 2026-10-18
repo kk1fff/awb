@@ -8,7 +8,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { createApp } from '../src/server/app.js';
 import { createFieldworkMcpServer, fieldworkInstructions } from '../src/server/mcp-server.js';
-import type { ToolService } from '../src/server/service.js';
+import { ToolService } from '../src/server/service.js';
 import type {
   Checkpoint,
   Scene,
@@ -17,6 +17,9 @@ import type {
   ToolResponse,
 } from '../src/shared/schema.js';
 import { tinyGlb, tinyHdr, tinyPng } from './helpers/assets.js';
+import { createSceneBundle, readSceneBundle } from '../src/server/scene-bundle.js';
+import { unzipSync, zipSync } from 'fflate';
+import { AssetCatalog } from '../src/server/asset-catalog.js';
 
 let server: Server;
 let base: string;
@@ -75,6 +78,352 @@ afterEach(async () => {
 });
 
 describe('public tool API', () => {
+  it('exports a portable bundle with same-revision preview, scene and GLB', async () => {
+    service.options.capture = async (_url, output) => writeFile(output, tinyPng());
+    await call('create_object', { name: 'Portable box', type: 'box' });
+    const exported = await call('export_scene_bundle');
+    expect(exported.success).toBe(true);
+    const result = exported.result as {
+      artifactUrl: string;
+      sceneRevision: number;
+      previewSceneRevision: number;
+      glbSceneRevision: number;
+      bytes: number;
+    };
+    expect(result.sceneRevision).toBe(1);
+    expect(result.previewSceneRevision).toBe(1);
+    expect(result.glbSceneRevision).toBe(1);
+    const downloaded = await fetch(`${base}${result.artifactUrl}`);
+    expect(downloaded.status).toBe(200);
+    const archiveData = Buffer.from(await downloaded.arrayBuffer());
+    const parsed = readSceneBundle(archiveData);
+    expect(parsed.scene.revision).toBe(1);
+    expect(parsed.entries['preview.png']).toEqual(tinyPng());
+    expect(parsed.entries['scene.glb'].subarray(0, 4).toString()).toBe('glTF');
+    expect(parsed.manifest.source.executionId).toBe(exported.executionId);
+    const imported = await fetch(`${base}/api/bundles/import`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/zip', 'X-Scene-Name': 'portable-source' },
+      body: Uint8Array.from(archiveData),
+    });
+    expect(imported.status).toBe(201);
+    expect((await imported.json()).asset.kind).toBe('model');
+    expect((await get<Scene>('/api/state')).revision).toBe(result.sceneRevision);
+  });
+
+  it('rolls back a bundle import interrupted between catalog, scene and lineage writes on startup', async () => {
+    const isolated = await mkdtemp(path.join(tmpdir(), 'fieldwork-bundle-recovery-'));
+    const dataDir = path.join(isolated, 'data');
+    const importId = crypto.randomUUID();
+    const sceneName = 'interrupted-source';
+    const catalog = new AssetCatalog(dataDir);
+    const localAsset = await catalog.importLocalAsset({
+      name: 'Interrupted asset',
+      fileName: 'interrupted.glb',
+      tags: ['transaction-test'],
+      data: tinyGlb(),
+    });
+    await mkdir(path.join(dataDir, 'scenes'), { recursive: true });
+    await mkdir(path.join(dataDir, 'bundle-imports', '.transactions'), { recursive: true });
+    await mkdir(path.join(dataDir, 'bundle-imports'), { recursive: true });
+    await writeFile(
+      path.join(dataDir, 'scenes', `${sceneName}.json`),
+      JSON.stringify({ partial: true }),
+    );
+    await writeFile(path.join(dataDir, 'scenes', `${sceneName}.json.bundle-reservation`), importId);
+    await writeFile(
+      path.join(dataDir, 'bundle-imports', `${importId}.json`),
+      JSON.stringify({ partial: true }),
+    );
+    await writeFile(
+      path.join(dataDir, 'bundle-imports', '.transactions', `${importId}.json`),
+      JSON.stringify({
+        version: 1,
+        importId,
+        sceneName,
+        originalCatalog: null,
+        originalAssetFiles: [],
+      }),
+    );
+
+    const restarted = new ToolService({
+      dataDir,
+      artifactsDir: path.join(isolated, 'runs'),
+      runId: 'bundle-recovery-restart',
+      clientUrl: '',
+    });
+    await restarted.init();
+    expect((await restarted.assets.records()).filter((asset) => asset.source === 'local')).toEqual(
+      [],
+    );
+    await expect(readFile(path.join(dataDir, 'assets', localAsset.file!))).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+    await expect(readFile(path.join(dataDir, 'scenes', `${sceneName}.json`))).rejects.toMatchObject(
+      {
+        code: 'ENOENT',
+      },
+    );
+    await expect(
+      readFile(path.join(dataDir, 'bundle-imports', `${importId}.json`)),
+    ).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(readdir(path.join(dataDir, 'bundle-imports', '.transactions'))).resolves.toEqual(
+      [],
+    );
+    await rm(isolated, { recursive: true, force: true });
+  });
+
+  it('clears a prepared journal interrupted before name reservation without deleting an unrelated save', async () => {
+    const isolated = await mkdtemp(path.join(tmpdir(), 'fieldwork-bundle-pre-reservation-'));
+    const dataDir = path.join(isolated, 'data');
+    const importId = crypto.randomUUID();
+    const sceneName = 'independent-save';
+    await mkdir(path.join(dataDir, 'scenes'), { recursive: true });
+    await mkdir(path.join(dataDir, 'bundle-imports', '.transactions'), { recursive: true });
+    const existingScene = path.join(dataDir, 'scenes', `${sceneName}.json`);
+    await writeFile(existingScene, JSON.stringify({ owner: 'another completed save' }));
+    await writeFile(
+      path.join(dataDir, 'bundle-imports', '.transactions', `${importId}.json`),
+      JSON.stringify({
+        version: 1,
+        importId,
+        sceneName,
+        originalCatalog: null,
+        originalAssetFiles: [],
+      }),
+    );
+
+    const restarted = new ToolService({
+      dataDir,
+      artifactsDir: path.join(isolated, 'runs'),
+      runId: 'bundle-pre-reservation-restart',
+      clientUrl: '',
+    });
+    await restarted.init();
+    expect(await readFile(existingScene, 'utf8')).toBe(
+      JSON.stringify({ owner: 'another completed save' }),
+    );
+    await expect(readFile(`${existingScene}.bundle-reservation`, 'utf8')).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+    await expect(readdir(path.join(dataDir, 'bundle-imports', '.transactions'))).resolves.toEqual(
+      [],
+    );
+    await rm(isolated, { recursive: true, force: true });
+  });
+
+  it('imports a self-contained bundle into an existing workspace without changing its active scene', async () => {
+    const texture = await uploadAsset(
+      'siding.png',
+      'Bundle siding map',
+      ['bundle-test'],
+      tinyPng(),
+    );
+    const textureAsset = (await texture.json()).asset;
+    const environment = await uploadAsset(
+      'overcast.hdr',
+      'Bundle overcast',
+      ['bundle-test'],
+      tinyHdr(),
+    );
+    const environmentAsset = (await environment.json()).asset;
+    const model = await uploadAsset('porch.glb', 'Bundle porch model', ['bundle-test'], tinyGlb());
+    const modelAsset = (await model.json()).asset;
+    const object = await call('create_object', {
+      name: 'Porch',
+      type: 'asset',
+      assetId: modelAsset.id,
+      materialId: textureAsset.id,
+    });
+    expect(object.success).toBe(true);
+    await call('set_lighting', { environmentAssetId: environmentAsset.id });
+    const scene = await get<Scene>('/api/state');
+    const assets = await Promise.all(
+      [modelAsset, textureAsset, environmentAsset].map(async (record) => ({
+        record: await service.assets.get(record.id),
+        data: await readFile(await service.assets.filePath(record.id)),
+      })),
+    );
+    const portable = await createSceneBundle({
+      scene,
+      preview: tinyPng(),
+      glb: tinyGlb(),
+      assets,
+      workspaceId: 'default',
+      runId: service.options.runId,
+      executionId: crypto.randomUUID(),
+      workspaceContext: { goal: 'Build a garden', currentTask: 'Place the pond' },
+    });
+    expect(portable.manifest.workspaceContext).toEqual({
+      goal: 'Build a garden',
+      currentTask: 'Place the pond',
+    });
+    const created = (await (
+      await fetch(`${base}/api/workspaces`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Bundle target', goal: 'Import a portable model' }),
+      })
+    ).json()) as { workspace: { id: string } };
+    const targetId = created.workspace.id;
+    const untouched = (await (
+      await fetch(`${base}/api/workspaces/${targetId}/state`)
+    ).json()) as Scene;
+    const importedResponse = await fetch(`${base}/api/workspaces/${targetId}/bundles/import`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/zip', 'X-Scene-Name': 'pnw-porch-source' },
+      body: Uint8Array.from(portable.data),
+    });
+    expect(importedResponse.status).toBe(201);
+    const imported = (await importedResponse.json()) as {
+      importId: string;
+      sceneName: string;
+      asset: { id: string; kind: string };
+      lineage: { bundleId: string; assetMappings: Record<string, string> };
+    };
+    expect(imported.asset.kind).toBe('model');
+    expect(imported.lineage.bundleId).toBe(portable.manifest.bundleId);
+    const placeable = await fetch(
+      `${base}/api/workspaces/${targetId}/assets/${encodeURIComponent(imported.asset.id)}`,
+    );
+    expect(placeable.status).toBe(200);
+    expect((await placeable.json()).kind).toBe('model');
+    expect(
+      await readFile(
+        path.join(root, 'data/workspaces', targetId, 'bundle-imports', `${imported.importId}.json`),
+        'utf8',
+      ),
+    ).toContain(portable.manifest.bundleId);
+    expect(
+      (await (await fetch(`${base}/api/workspaces/${targetId}/state`)).json()) as Scene,
+    ).toEqual(untouched);
+    const loaded = await fetch(`${base}/api/workspaces/${targetId}/tools`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tool: 'load_scene', arguments: { name: imported.sceneName } }),
+    });
+    expect(((await loaded.json()) as ToolResponse).success).toBe(true);
+    const importedScene = (await (
+      await fetch(`${base}/api/workspaces/${targetId}/state`)
+    ).json()) as Scene;
+    const mappedModel = imported.lineage.assetMappings[modelAsset.id];
+    const mappedTexture = imported.lineage.assetMappings[textureAsset.id];
+    const mappedEnvironment = imported.lineage.assetMappings[environmentAsset.id];
+    expect(importedScene.objects[0]).toMatchObject({
+      assetId: mappedModel,
+      materialId: mappedTexture,
+    });
+    expect(importedScene.lighting.environmentAssetId).toBe(mappedEnvironment);
+    const targetCatalogPath = path.join(root, 'data/workspaces', targetId, 'assets/catalog.json');
+    const beforeCollision = await readFile(targetCatalogPath, 'utf8');
+    const collision = await fetch(`${base}/api/workspaces/${targetId}/bundles/import`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/zip', 'X-Scene-Name': 'pnw-porch-source' },
+      body: Uint8Array.from(portable.data),
+    });
+    expect(collision.status).toBe(409);
+    expect(await readFile(targetCatalogPath, 'utf8')).toBe(beforeCollision);
+    expect(await get<Scene>('/api/state')).toEqual(scene);
+  });
+
+  it('rejects malformed, zip-slip and oversized bundles without target mutations', async () => {
+    const created = (await (
+      await fetch(`${base}/api/workspaces`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Invalid bundle target', goal: 'Reject invalid archives' }),
+      })
+    ).json()) as { workspace: { id: string } };
+    const targetId = created.workspace.id;
+    const targetData = path.join(root, 'data/workspaces', targetId);
+    const sourceBundle = await createSceneBundle({
+      scene: await get<Scene>('/api/state'),
+      preview: tinyPng(),
+      glb: tinyGlb(),
+      assets: [],
+      workspaceId: 'default',
+      runId: service.options.runId,
+      executionId: crypto.randomUUID(),
+    });
+    const tamperedEntries = unzipSync(sourceBundle.data);
+    const changedPreview = Buffer.from(tamperedEntries['preview.png']);
+    changedPreview[20] ^= 1;
+    tamperedEntries['preview.png'] = changedPreview;
+    const uploads = [
+      Buffer.from('not a zip'),
+      zipSync({ '../escape.txt': Buffer.from('no') }),
+      zipSync({ 'assets/huge.bin': Buffer.alloc(6 * 1024 * 1024) }, { level: 9 }),
+      zipSync(tamperedEntries),
+    ];
+    const expected = [
+      'INVALID_BUNDLE',
+      'INVALID_BUNDLE',
+      'BUNDLE_TOO_LARGE',
+      'BUNDLE_HASH_MISMATCH',
+    ];
+    for (let i = 0; i < uploads.length; i++) {
+      const response = await fetch(`${base}/api/workspaces/${targetId}/bundles/import`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/zip', 'X-Scene-Name': `invalid-${i}` },
+        body: uploads[i],
+      });
+      expect(response.status).toBe(400);
+      expect((await response.json()).error.code).toBe(expected[i]);
+    }
+    expect((await get<Scene>(`/api/workspaces/${targetId}/state`)).objects).toEqual([]);
+    expect(await readdir(path.join(targetData, 'scenes'))).toEqual([]);
+    expect(
+      await readFile(path.join(targetData, 'assets/catalog.json'), 'utf8').catch(() => ''),
+    ).toBe('');
+
+    const materialResponse = await uploadAsset(
+      'rollback.png',
+      'Rollback map',
+      ['rollback-test'],
+      tinyPng(),
+    );
+    const materialRecord = (await materialResponse.json()).asset;
+    const modelResponse = await uploadAsset(
+      'rollback.glb',
+      'Rollback model',
+      ['rollback-test'],
+      tinyGlb(),
+    );
+    const modelRecord = (await modelResponse.json()).asset;
+    await call('create_object', {
+      name: 'Rollback source object',
+      type: 'asset',
+      assetId: modelRecord.id,
+      materialId: materialRecord.id,
+    });
+    const rollbackBundle = await createSceneBundle({
+      scene: await get<Scene>('/api/state'),
+      preview: tinyPng(),
+      glb: tinyGlb(),
+      assets: [
+        { record: await service.assets.get(materialRecord.id), data: tinyPng() },
+        { record: await service.assets.get(modelRecord.id), data: Buffer.from('invalid GLB') },
+      ],
+      workspaceId: 'default',
+      runId: service.options.runId,
+      executionId: crypto.randomUUID(),
+    });
+    const partialFailure = await fetch(`${base}/api/workspaces/${targetId}/bundles/import`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/zip', 'X-Scene-Name': 'partial-failure' },
+      body: Uint8Array.from(rollbackBundle.data),
+    });
+    expect(partialFailure.status).toBe(400);
+    expect((await partialFailure.json()).error.code).toBe('INVALID_ASSET_FILE');
+    expect((await get<Scene>(`/api/workspaces/${targetId}/state`)).objects).toEqual([]);
+    expect(await readdir(path.join(targetData, 'scenes'))).toEqual([]);
+    await expect(
+      readFile(path.join(targetData, 'assets/catalog.json'), 'utf8'),
+    ).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+  });
+
   it('serves the canonical designer guide and advertises concise MCP bootstrap instructions', async () => {
     const guide = await readFile(path.resolve(process.cwd(), 'docs/designer-agent-bootstrap.md'));
     const response = await fetch(`${base}/api/instructions`);
@@ -114,7 +463,8 @@ describe('public tool API', () => {
 
   it('discovers every tool and exercises create, inspect, list, patch and delete', async () => {
     const docs = await get<{ tools: Record<string, unknown> }>('/api/tools');
-    expect(Object.keys(docs.tools)).toHaveLength(16);
+    expect(Object.keys(docs.tools)).toHaveLength(17);
+    expect(docs.tools).toHaveProperty('export_scene_bundle');
     const created = await call('create_object', {
       name: 'Tree',
       type: 'cylinder',

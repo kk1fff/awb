@@ -1,5 +1,14 @@
 import { randomUUID } from 'node:crypto';
-import { appendFile, mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
+import {
+  appendFile,
+  mkdir,
+  readFile,
+  readdir,
+  rename,
+  rm,
+  stat,
+  writeFile,
+} from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
 import { SceneEngine, ToolError } from '../engine/scene.js';
@@ -10,12 +19,19 @@ import {
   type ToolEvent,
   type ToolName,
   type ToolResponse,
+  type AssetRecord,
   type Scene,
   sceneSchema,
 } from '../shared/schema.js';
 import { capture, type Capture } from './capture.js';
 import { exportScene } from './export.js';
 import { AssetCatalog } from './asset-catalog.js';
+import {
+  createSceneBundle,
+  recoverInterruptedBundleImports,
+  SCENE_BUNDLE_MAX_FILES,
+  SCENE_BUNDLE_MAX_UNCOMPRESSED_BYTES,
+} from './scene-bundle.js';
 
 export interface LiveMessage {
   type: 'tool-start' | 'update';
@@ -86,6 +102,13 @@ export class ToolService {
   }
   async init(): Promise<void> {
     await mkdir(path.join(this.options.dataDir, 'scenes'), { recursive: true });
+    try {
+      await recoverInterruptedBundleImports(this.options.dataDir);
+    } catch (error) {
+      if (!(error instanceof ToolError) || error.code !== 'BUNDLE_IMPORT_RECOVERY_FAILED')
+        throw error;
+      this.recoveryError = { code: error.code, message: error.message };
+    }
     try {
       await this.recoverCommittedScene();
     } catch (error) {
@@ -320,6 +343,11 @@ export class ToolService {
     this.queue = next.catch(() => undefined);
     return next;
   }
+  serialize<T>(operation: () => Promise<T>): Promise<T> {
+    const next = this.queue.then(operation);
+    this.queue = next.catch(() => undefined);
+    return next;
+  }
   private async run(input: unknown, rejection?: ToolError): Promise<ToolResponse> {
     const executionId = randomUUID();
     const timestamp = new Date().toISOString();
@@ -358,6 +386,7 @@ export class ToolService {
           'save_scene',
           'render_scene',
           'export_scene',
+          'export_scene_bundle',
         ].includes(tool)
       )
         throw new ToolError(
@@ -643,6 +672,88 @@ export class ToolService {
       if (this.options.workspaceId && this.options.workspaceId !== 'default')
         result.artifactUrl = `/api/workspaces/${this.options.workspaceId}/artifacts/${this.options.runId}/exports/${result.fileName}`;
       return result;
+    }
+    if (tool === 'export_scene_bundle') {
+      const scene = this.engine.snapshot();
+      const checkpoint = await this.render(
+        `Scene bundle revision ${scene.revision}`,
+        executionId,
+        timestamp,
+      );
+      if (!checkpoint.screenshotPath)
+        throw new ToolError('RENDER_FAILED', 'Bundle preview was not written to disk.');
+      const clientUrl =
+        this.options.workspaceId && this.options.workspaceId !== 'default'
+          ? `${this.options.clientUrl}/?workspace=${encodeURIComponent(this.options.workspaceId)}`
+          : this.options.clientUrl;
+      const glb = await exportScene(scene, this.runDir, executionId, clientUrl);
+      const glbBytes = await readFile(path.join(this.runDir, 'exports', glb.fileName));
+      const previewBytes = await readFile(checkpoint.screenshotPath);
+      const referencedIds = new Set<string>();
+      for (const object of scene.objects) {
+        if (object.assetId) referencedIds.add(object.assetId);
+        if (object.materialId) referencedIds.add(object.materialId);
+      }
+      if (scene.lighting.environmentAssetId) referencedIds.add(scene.lighting.environmentAssetId);
+      if (referencedIds.size + 4 > SCENE_BUNDLE_MAX_FILES)
+        throw new ToolError(
+          'BUNDLE_TOO_LARGE',
+          'Scene references too many catalog assets for a bundle.',
+        );
+      let payloadBytes =
+        Buffer.byteLength(JSON.stringify(scene)) + glbBytes.length + previewBytes.length;
+      const assets: Array<{ record: AssetRecord; data?: Buffer }> = [];
+      for (const id of referencedIds) {
+        const record = await this.assets.get(id);
+        if (record.source !== 'local') {
+          assets.push({ record });
+          continue;
+        }
+        const assetPath = await this.assets.filePath(id);
+        const details = await stat(assetPath);
+        payloadBytes += details.size;
+        if (payloadBytes > SCENE_BUNDLE_MAX_UNCOMPRESSED_BYTES)
+          throw new ToolError(
+            'BUNDLE_TOO_LARGE',
+            'Scene bundle exceeds the uncompressed size limit.',
+          );
+        assets.push({ record, data: await readFile(assetPath) });
+      }
+      const created = await createSceneBundle({
+        scene,
+        preview: previewBytes,
+        glb: glbBytes,
+        assets,
+        workspaceId: this.options.workspaceId ?? 'default',
+        runId: this.options.runId,
+        executionId,
+        workspaceContext: this.options.getWorkspaceContext
+          ? await this.options.getWorkspaceContext().then((context) => {
+              const value = context as { goal?: string; currentTask?: string };
+              return { goal: value.goal ?? '', currentTask: value.currentTask ?? '' };
+            })
+          : undefined,
+      });
+      const fileName = `scene-bundle-${executionId}.zip`;
+      const directory = path.join(this.runDir, 'bundles');
+      await mkdir(directory, { recursive: true });
+      await writeFile(path.join(directory, fileName), created.data, { flag: 'wx' });
+      const artifactUrl =
+        this.options.workspaceId && this.options.workspaceId !== 'default'
+          ? `/api/workspaces/${this.options.workspaceId}/artifacts/${this.options.runId}/bundles/${fileName}`
+          : `/artifacts/bundles/${fileName}`;
+      return {
+        format: 'fieldwork-scene-bundle',
+        bundleId: created.manifest.bundleId,
+        fileName,
+        artifactUrl,
+        sceneRevision: scene.revision,
+        previewCheckpointId: checkpoint.id,
+        previewSceneRevision: checkpoint.sceneRevision,
+        glbSceneRevision: glb.sceneRevision,
+        bytes: created.data.length,
+        assetCount: created.manifest.referencedAssets.length,
+      };
     }
     if (tool === 'record_review') {
       const review = {
