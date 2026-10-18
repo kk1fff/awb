@@ -35,7 +35,30 @@ const pretty = (value: unknown) => JSON.stringify(value, null, 2);
 export function App() {
   const workspaceId = workspaceIdFromUrl();
   const apiBase = workspaceApiBase(workspaceId);
-  const [workspaces, setWorkspaces] = useState<Array<{ id: string; name: string }>>([]);
+  const workspaceContextUrl =
+    workspaceId === 'default' ? '/api/workspaces/default/context' : `${apiBase}/context`;
+  type WorkspaceSummary = {
+    id: string;
+    name: string;
+    owner?: string;
+    goal: string;
+    acceptanceCriteria: string[];
+    constraints: string[];
+    currentTask: string;
+    workStatus: string;
+    summary: string;
+    workspaceStatus: 'active' | 'archived';
+    updatedAt: string;
+    runId?: string;
+    active: boolean;
+  };
+  const [workspaces, setWorkspaces] = useState<WorkspaceSummary[]>([]);
+  const [workspaceContext, setWorkspaceContext] = useState<Record<string, any>>();
+  const [workspaceFilter, setWorkspaceFilter] = useState<'all' | 'active' | 'archived'>('all');
+  const [bundleName, setBundleName] = useState('specialist-submodel');
+  const [bundleMessage, setBundleMessage] = useState('');
+  const [bundleImportBusy, setBundleImportBusy] = useState(false);
+  const bundleInput = useRef<HTMLInputElement>(null);
   const [scene, setScene] = useState<Scene>();
   const [events, setEvents] = useState<ToolEvent[]>([]);
   const [checkpoints, setCheckpoints] = useState<Checkpoint[]>([]);
@@ -79,12 +102,21 @@ export function App() {
     setCheckpoints(shots);
     setReviews(notes);
     setRunId(health.runId);
+    const [listed, contextResult] = await Promise.all([
+      get<{ workspaces: WorkspaceSummary[] }>('/api/workspaces'),
+      get<{ context: Record<string, any> }>(workspaceContextUrl),
+    ]);
+    setWorkspaces(listed.workspaces);
+    setWorkspaceContext(contextResult.context);
   };
   useEffect(() => {
     mounted.current = true;
-    void get<{ workspaces: Array<{ id: string; name: string }> }>('/api/workspaces')
+    void get<{ workspaces: WorkspaceSummary[] }>('/api/workspaces')
       .then((value) => setWorkspaces(value.workspaces))
       .catch(() => undefined);
+    void get<{ context: Record<string, any> }>(workspaceContextUrl)
+      .then((value) => setWorkspaceContext(value.context))
+      .catch((e) => setError(String(e)));
     const stream = new EventSource(`${apiBase}/stream`);
     stream.addEventListener('snapshot', (event) => {
       const snapshot = JSON.parse((event as MessageEvent).data) as {
@@ -127,7 +159,7 @@ export function App() {
       mounted.current = false;
       stream.close();
     };
-  }, [apiBase]);
+  }, [apiBase, workspaceContextUrl]);
   useEffect(() => {
     if (scene) setCameraFovDraft(scene.camera.fov);
   }, [scene?.camera.fov]);
@@ -165,6 +197,86 @@ export function App() {
   };
   const object = scene?.objects.find((o) => o.id === selected);
   const complete = checkpoints.filter((c) => c.status === 'complete');
+  const selectedWorkspace = workspaces.find((item) => item.id === workspaceId);
+  const isArchived =
+    (workspaceContext?.workspaceStatus ?? selectedWorkspace?.workspaceStatus) === 'archived';
+  const refreshWorkspaces = async () => {
+    const [listed, contextResult] = await Promise.all([
+      get<{ workspaces: WorkspaceSummary[] }>('/api/workspaces'),
+      get<{ context: Record<string, any> }>(workspaceContextUrl),
+    ]);
+    setWorkspaces(listed.workspaces);
+    setWorkspaceContext(contextResult.context);
+  };
+  const lifecycleAction = async (action: 'archive' | 'restore' | 'purge', id = workspaceId) => {
+    if (action === 'purge') {
+      const typed = window.prompt(
+        `Permanently purge archived workspace ${id}. Type its exact UUID to confirm.`,
+      );
+      if (typed !== id) return;
+    }
+    const response = await fetch(`/api/workspaces/${id}${action === 'purge' ? '' : `/${action}`}`, {
+      method: action === 'purge' ? 'DELETE' : 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      ...(action === 'purge' ? { body: JSON.stringify({ confirmWorkspaceId: id }) } : {}),
+    });
+    const value = (await response.json()) as { error?: { message?: string } };
+    if (!response.ok) {
+      setError(value.error?.message ?? `${action} failed`);
+      return;
+    }
+    if (action === 'purge' && id === workspaceId) {
+      location.href = '/';
+      return;
+    }
+    await refreshWorkspaces();
+  };
+  const exportBundle = async () => {
+    const result = (await command('export_scene_bundle', {})) as
+      { result?: { artifactUrl?: string; fileName?: string } } | undefined;
+    if (!result?.result?.artifactUrl) return;
+    const link = document.createElement('a');
+    link.href = result.result.artifactUrl;
+    link.download = result.result.fileName ?? 'scene-bundle.zip';
+    link.click();
+  };
+  const importBundle = async (file?: File) => {
+    if (!file || bundleImportBusy) return;
+    setBundleImportBusy(true);
+    setError('');
+    setBundleMessage('');
+    try {
+      const response = await fetch(`${apiBase}/bundles/import`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/zip',
+          'X-Scene-Name': encodeURIComponent(bundleName.trim()),
+        },
+        body: file,
+      });
+      const value = (await response.json()) as {
+        asset?: { id?: string };
+        sceneName?: string;
+        lineage?: {
+          source?: { workspaceId?: string; runId?: string; executionId?: string };
+          sourceSceneRevision?: number;
+        };
+        error?: { message?: string };
+      };
+      if (!response.ok) {
+        setError(value.error?.message ?? 'Bundle import failed.');
+        return;
+      }
+      setBundleMessage(
+        `Imported editable save “${value.sceneName ?? bundleName}” from ${value.lineage?.source?.workspaceId ?? 'source workspace'} r${value.lineage?.sourceSceneRevision ?? '?'} and placeable asset ${value.asset?.id ?? ''}. Active scene is unchanged.`,
+      );
+      if (bundleInput.current) bundleInput.current.value = '';
+    } catch (error) {
+      setError(`Bundle import failed: ${String(error)}`);
+    } finally {
+      setBundleImportBusy(false);
+    }
+  };
   const exportGlb = async () => {
     const response = await command('export_scene', {});
     const exported = response?.result as SceneExport | undefined;
@@ -205,27 +317,12 @@ export function App() {
           </select>
           <button
             type="button"
-            onClick={async () => {
-              const name = window.prompt('Name for the new isolated workspace');
-              if (!name?.trim()) return;
-              const goal = window.prompt('Workspace goal');
-              if (!goal?.trim()) return;
-              const response = await fetch('/api/workspaces', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ name, goal }),
-              });
-              const value = (await response.json()) as {
-                workspace?: { id: string };
-                error?: { message?: string };
-              };
-              if (!response.ok || !value.workspace) {
-                setError(value.error?.message ?? 'Workspace creation failed.');
-                return;
+            onClick={() => {
+              const create = document.querySelector<HTMLDetailsElement>('.workspace-create');
+              if (create) {
+                create.open = true;
+                create.scrollIntoView({ behavior: 'smooth', block: 'center' });
               }
-              const next = new URL(location.href);
-              next.searchParams.set('workspace', value.workspace.id);
-              location.href = next.toString();
             }}
           >
             ＋ Workspace
@@ -237,6 +334,264 @@ export function App() {
           <strong data-testid="revision">{String(scene?.revision ?? 0).padStart(3, '0')}</strong>
         </div>
       </header>
+      <section className="workspace-dashboard panel" aria-label="Workspace dashboard">
+        <div className="panel-title">
+          <div>
+            <h2>Workspace brief</h2>
+            <small>Persistent context · workspace status is separate from agent work status</small>
+          </div>
+          <label className="workspace-filter">
+            Show
+            <select
+              aria-label="Workspace filter"
+              value={workspaceFilter}
+              onChange={(event) => setWorkspaceFilter(event.target.value as typeof workspaceFilter)}
+            >
+              <option value="all">All workspaces</option>
+              <option value="active">Active</option>
+              <option value="archived">Archived</option>
+            </select>
+          </label>
+        </div>
+        <div className="workspace-dashboard-grid">
+          <div className="workspace-browser">
+            <div className="workspace-list" aria-label="All workspaces">
+              {workspaces
+                .filter(
+                  (item) => workspaceFilter === 'all' || item.workspaceStatus === workspaceFilter,
+                )
+                .map((item) => (
+                  <article
+                    key={item.id}
+                    className={`workspace-card ${item.id === workspaceId ? 'selected' : ''}`}
+                  >
+                    <button
+                      className="workspace-card-open"
+                      onClick={() => {
+                        const next = new URL(location.href);
+                        if (item.id === 'default') next.searchParams.delete('workspace');
+                        else next.searchParams.set('workspace', item.id);
+                        location.href = next.toString();
+                      }}
+                    >
+                      <strong>
+                        {item.name}
+                        {item.id === 'default' ? ' · legacy default' : ''}
+                      </strong>
+                      <span>
+                        {item.workspaceStatus.toUpperCase()} · {item.workStatus} ·{' '}
+                        {item.active ? 'service open' : 'service idle'}
+                      </span>
+                      <small>
+                        {item.goal || 'No goal recorded'} · {item.owner || 'No owner'} ·{' '}
+                        {item.runId ? `run ${item.runId.slice(0, 12)}` : 'no run yet'}
+                      </small>
+                      <small>
+                        Updated{' '}
+                        {item.updatedAt === 'legacy'
+                          ? 'before workspace tracking'
+                          : new Date(item.updatedAt).toLocaleString()}
+                      </small>
+                      <code>{item.id}</code>
+                    </button>
+                    {item.id !== 'default' && (
+                      <div className="workspace-card-actions">
+                        {item.workspaceStatus === 'active' ? (
+                          <button onClick={() => void lifecycleAction('archive', item.id)}>
+                            Archive
+                          </button>
+                        ) : (
+                          <button onClick={() => void lifecycleAction('restore', item.id)}>
+                            Restore
+                          </button>
+                        )}
+                        {item.workspaceStatus === 'archived' && (
+                          <button
+                            className="danger-button"
+                            onClick={() => void lifecycleAction('purge', item.id)}
+                          >
+                            Purge…
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </article>
+                ))}
+            </div>
+            <details className="workspace-create">
+              <summary>＋ Create specialist workspace</summary>
+              <form
+                onSubmit={async (event) => {
+                  event.preventDefault();
+                  const form = new FormData(event.currentTarget);
+                  const response = await fetch('/api/workspaces', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                      name: form.get('name'),
+                      owner: form.get('owner') || undefined,
+                      goal: form.get('goal'),
+                      acceptanceCriteria: String(form.get('acceptanceCriteria') || '')
+                        .split('\n')
+                        .map((s) => s.trim())
+                        .filter(Boolean),
+                      constraints: String(form.get('constraints') || '')
+                        .split('\n')
+                        .map((s) => s.trim())
+                        .filter(Boolean),
+                    }),
+                  });
+                  const value = (await response.json()) as {
+                    workspace?: { id: string };
+                    error?: { message?: string };
+                  };
+                  if (!response.ok || !value.workspace) {
+                    setError(value.error?.message ?? 'Workspace creation failed.');
+                    return;
+                  }
+                  const next = new URL(location.href);
+                  next.searchParams.set('workspace', value.workspace.id);
+                  location.href = next.toString();
+                }}
+              >
+                <label>
+                  Name
+                  <input name="name" required maxLength={100} />
+                </label>
+                <label>
+                  Owner
+                  <input name="owner" maxLength={120} />
+                </label>
+                <label>
+                  Goal
+                  <textarea name="goal" required maxLength={2000} />
+                </label>
+                <label>
+                  Acceptance criteria <small>One per line</small>
+                  <textarea name="acceptanceCriteria" />
+                </label>
+                <label>
+                  Constraints <small>One per line</small>
+                  <textarea name="constraints" />
+                </label>
+                <button type="submit">Create and open</button>
+              </form>
+            </details>
+          </div>
+          <div className="workspace-brief" data-testid="workspace-brief">
+            {isArchived && (
+              <div className="archived-banner" role="status">
+                ARCHIVED · Read-only workspace. Restore it before making scene or context changes.
+              </div>
+            )}
+            <div className="brief-title">
+              <h3>{workspaceContext?.name ?? selectedWorkspace?.name ?? 'Loading workspace…'}</h3>
+              <span className={`work-status ${isArchived ? 'archived' : ''}`}>
+                {isArchived
+                  ? 'ARCHIVED'
+                  : (workspaceContext?.workStatus ?? 'planned').replace('_', ' ').toUpperCase()}
+              </span>
+            </div>
+            <p className="brief-goal">
+              {workspaceContext?.goal || 'No goal recorded for this workspace.'}
+            </p>
+            <div className="brief-meta">
+              <span>Owner: {workspaceContext?.owner || 'Unassigned'}</span>
+              <span>Updated: {workspaceContext?.updatedAt || '—'}</span>
+              <span>
+                Scene r{workspaceContext?.currentScene?.revision ?? scene?.revision ?? 0} ·{' '}
+                {workspaceContext?.currentScene?.objectCount ?? scene?.objects.length ?? 0} objects
+              </span>
+              <span>Run: {workspaceContext?.runId ?? runId}</span>
+            </div>
+            <div className="brief-columns">
+              <div>
+                <h4>Current task</h4>
+                <p>{workspaceContext?.currentTask || 'No current task.'}</p>
+              </div>
+              <div>
+                <h4>Summary</h4>
+                <p>{workspaceContext?.summary || 'No progress summary yet.'}</p>
+              </div>
+              <div>
+                <h4>Acceptance criteria</h4>
+                {workspaceContext?.acceptanceCriteria?.length ? (
+                  <ul>
+                    {workspaceContext.acceptanceCriteria.map((item: string) => (
+                      <li key={item}>{item}</li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p>None recorded.</p>
+                )}
+              </div>
+              <div>
+                <h4>Constraints</h4>
+                {workspaceContext?.constraints?.length ? (
+                  <ul>
+                    {workspaceContext.constraints.map((item: string) => (
+                      <li key={item}>{item}</li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p>None recorded.</p>
+                )}
+              </div>
+            </div>
+            {workspaceContext?.latestCheckpoint && (
+              <a
+                href={workspaceContext.latestCheckpoint.screenshotUrl}
+                target="_blank"
+                rel="noreferrer"
+              >
+                Latest checkpoint · r{workspaceContext.latestCheckpoint.sceneRevision} ↗
+              </a>
+            )}
+            {isArchived && (
+              <p className="archived-hint">
+                Scene inspection and history remain available. Restore this workspace to edit it.
+              </p>
+            )}
+            <div className="brief-controls">
+              {workspaceId !== 'default' &&
+                (isArchived ? (
+                  <button onClick={() => void lifecycleAction('restore')}>Restore workspace</button>
+                ) : (
+                  <button onClick={() => void lifecycleAction('archive')}>Archive workspace</button>
+                ))}
+              <label>
+                Update work status
+                <select
+                  aria-label="Update work status"
+                  disabled={isArchived}
+                  value={workspaceContext?.workStatus ?? 'planned'}
+                  onChange={async (event) => {
+                    const response = await fetch(`/api/workspaces/${workspaceId}/context`, {
+                      method: 'PATCH',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ workStatus: event.target.value }),
+                    });
+                    if (!response.ok) setError('Could not update workspace status.');
+                    else await refreshWorkspaces();
+                  }}
+                >
+                  <option value="planned">Planned</option>
+                  <option value="working">Working</option>
+                  <option value="blocked">Blocked</option>
+                  <option value="needs_review">Needs review</option>
+                  <option value="done">Done</option>
+                </select>
+              </label>
+              <span className="activity-summary">
+                Latest activity:{' '}
+                {workspaceContext?.recentActivity?.[0]
+                  ? `${workspaceContext.recentActivity[0].tool} · r${workspaceContext.recentActivity[0].sceneRevision}`
+                  : 'No tool calls yet'}
+              </span>
+            </div>
+          </div>
+        </div>
+      </section>
       <div className="workspace-heading">
         <div>
           <p className="eyebrow">CREATE / OBSERVE / REFINE</p>
@@ -246,6 +601,9 @@ export function App() {
           <p className="subtitle">Built by an agent. Open to your perspective.</p>
         </div>
         <div className="workspace-actions">
+          <button disabled={busy || !scene || isArchived} onClick={() => void exportBundle()}>
+            ⇩ Export handoff ZIP
+          </button>
           <button disabled={busy || !scene} onClick={() => void exportGlb()}>
             ↓ Export GLB
           </button>
@@ -259,6 +617,39 @@ export function App() {
           </button>
         </div>
       </div>
+      <section className="bundle-handoff panel">
+        <div>
+          <strong>Specialist handoff</strong>
+          <p>
+            Import a portable ZIP as an editable named save and a placeable GLB. The active scene
+            stays unchanged.
+          </p>
+        </div>
+        <label>
+          Editable save name (letters, digits, hyphens)
+          <input
+            aria-label="Bundle scene name"
+            value={bundleName}
+            disabled={isArchived || bundleImportBusy}
+            onChange={(event) => setBundleName(event.target.value)}
+          />
+        </label>
+        <input
+          ref={bundleInput}
+          aria-label="Scene bundle ZIP"
+          type="file"
+          accept=".zip,application/zip"
+          disabled={isArchived || bundleImportBusy}
+          onChange={(event) => void importBundle(event.currentTarget.files?.[0])}
+        />
+        {bundleImportBusy && <p role="status">Importing bundle… Large bundles can take a while.</p>}
+        {bundleMessage && (
+          <p role="status">
+            {bundleMessage} Use <strong>load_scene</strong> to open the editable save, or{' '}
+            <strong>search_assets</strong> then <strong>create_object</strong> to place the GLB.
+          </p>
+        )}
+      </section>
       {error && (
         <div role="alert" className="error-banner">
           {error}
@@ -267,7 +658,7 @@ export function App() {
           </button>
         </div>
       )}
-      <div className="editor-grid">
+      <div className={`editor-grid ${isArchived ? 'read-only' : ''}`}>
         <section className="scene-panel panel">
           <div className="panel-title">
             <h2>

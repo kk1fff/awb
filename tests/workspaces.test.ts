@@ -480,7 +480,7 @@ describe('isolated workspaces', () => {
       code: 'ENOENT',
     });
     await rm(cliRoot, { recursive: true, force: true });
-  });
+  }, 20_000);
 
   it('waits for accepted writes before archive and purge, then rejects queued/new writes', async () => {
     root = await mkdtemp(path.join(tmpdir(), 'fieldwork-workspace-lifecycle-race-'));

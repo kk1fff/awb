@@ -58,7 +58,9 @@ test('@smoke scopes the browser viewport and public tools to a selected workspac
   const toolResult = (await created.json()) as ToolResponse;
   expect(toolResult.success).toBe(true);
   await page.goto(`/?workspace=${workspace.id}`);
-  await expect(page.getByRole('combobox', { name: 'Workspace' })).toHaveValue(workspace.id);
+  await expect(page.getByRole('combobox', { name: 'Workspace', exact: true })).toHaveValue(
+    workspace.id,
+  );
   await expect
     .poll(() => page.evaluate(() => window.__sceneReady?.objectIds))
     .toContain((toolResult.result as SceneObject).id);
@@ -74,20 +76,137 @@ test('@smoke scopes the browser viewport and public tools to a selected workspac
   expect((await request.get(imageUrl)).ok()).toBe(true);
 });
 
-test('@smoke requires a goal when creating a workspace from the UI', async ({ page, request }) => {
+test('@smoke creates a structured workspace and persists its scene and brief across reload', async ({
+  page,
+  request,
+}) => {
   await page.goto('/');
-  const answers = ['Goal capture test', 'Build a visible garden scene'];
-  page.on('dialog', async (dialog) => {
-    await dialog.accept(answers.shift());
-  });
   await page.getByRole('button', { name: '＋ Workspace' }).click();
+  const form = page.locator('.workspace-create form');
+  await form.getByLabel('Name').fill('Goal capture test');
+  await form.getByLabel('Owner').fill('scene specialist');
+  await form.getByLabel('Goal').fill('Build a visible garden scene');
+  await form.getByLabel(/Acceptance criteria/).fill('Pond is visible\nThree trees are distinct');
+  await form.getByLabel(/Constraints/).fill('Use local assets only');
+  await form.getByRole('button', { name: 'Create and open' }).click();
   await expect(page).toHaveURL(/workspace=/);
   const workspaceId = new URL(page.url()).searchParams.get('workspace')!;
-  await expect(page.getByRole('combobox', { name: 'Workspace' })).toHaveValue(workspaceId);
+  await expect(page.getByRole('combobox', { name: 'Workspace', exact: true })).toHaveValue(
+    workspaceId,
+  );
   const context = await request.get(`/api/workspaces/${workspaceId}/context`);
   expect(await context.json()).toMatchObject({
-    context: { name: 'Goal capture test', goal: 'Build a visible garden scene' },
+    context: {
+      name: 'Goal capture test',
+      owner: 'scene specialist',
+      goal: 'Build a visible garden scene',
+      acceptanceCriteria: ['Pond is visible', 'Three trees are distinct'],
+      constraints: ['Use local assets only'],
+    },
   });
+  const created = await request.post(`/api/workspaces/${workspaceId}/tools`, {
+    data: { tool: 'create_object', arguments: { name: 'Persisted test object', type: 'box' } },
+  });
+  expect(created.ok()).toBeTruthy();
+  await page.reload();
+  await expect(page.getByTestId('workspace-brief')).toContainText('Build a visible garden scene');
+  await expect(page.getByTestId('workspace-brief')).toContainText('Pond is visible');
+  await expect(page.getByTestId('workspace-brief')).toContainText('Use local assets only');
+  await expect(page.getByRole('button', { name: /Persisted test object/ })).toBeVisible();
+  await page.screenshot({ path: 'artifacts/tests/workspace-dashboard.png', fullPage: true });
+});
+
+test('@smoke archives, restores, and purges from another selected workspace with explicit UUID confirmation', async ({
+  page,
+  request,
+}) => {
+  const created = await request.post('/api/workspaces', {
+    data: { name: 'Lifecycle dashboard', goal: 'Verify workspace lifecycle UI' },
+  });
+  const { workspace } = (await created.json()) as { workspace: { id: string } };
+  const id = workspace.id;
+  await page.goto(`/?workspace=${id}`);
+  await expect(page.getByTestId('workspace-brief')).toContainText('Verify workspace lifecycle UI');
+  await page.getByRole('button', { name: 'Archive workspace' }).click();
+  await expect(page.getByRole('status').filter({ hasText: 'ARCHIVED' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Restore workspace' })).toBeVisible();
+  await page.getByRole('button', { name: 'Restore workspace' }).click();
+  await expect(page.getByRole('button', { name: 'Archive workspace' })).toBeVisible();
+  await page.getByRole('button', { name: 'Archive workspace' }).click();
+  await expect(page.getByRole('status').filter({ hasText: 'ARCHIVED' })).toBeVisible();
+  const next = new URL(page.url());
+  next.searchParams.delete('workspace');
+  await page.goto(next.toString());
+  page.once('dialog', async (dialog) => {
+    expect(dialog.message()).toContain(id);
+    await dialog.accept(id);
+  });
+  await page
+    .getByRole('article')
+    .filter({ hasText: 'Lifecycle dashboard' })
+    .getByRole('button', { name: 'Purge…' })
+    .click();
+  await expect(page.getByRole('article').filter({ hasText: 'Lifecycle dashboard' })).toHaveCount(0);
+});
+
+test('@smoke exports and imports a portable handoff without replacing the target active scene', async ({
+  page,
+  request,
+}) => {
+  const sourceResponse = await request.post('/api/workspaces', {
+    data: { name: 'Bundle source UI', goal: 'Build a portable submodel' },
+  });
+  const targetResponse = await request.post('/api/workspaces', {
+    data: { name: 'Bundle target UI', goal: 'Receive a portable submodel' },
+  });
+  const { workspace: source } = (await sourceResponse.json()) as { workspace: { id: string } };
+  const { workspace: target } = (await targetResponse.json()) as { workspace: { id: string } };
+  await request.post(`/api/workspaces/${source.id}/tools`, {
+    data: {
+      tool: 'create_object',
+      arguments: { name: 'Handoff box', type: 'box', dimensions: [2, 1, 2], color: '#9f583e' },
+    },
+  });
+  await page.goto(`/?workspace=${source.id}`);
+  await expect(page.getByRole('button', { name: /Handoff box/ })).toBeVisible();
+  const downloadPromise = page.waitForEvent('download');
+  await page.getByRole('button', { name: '⇩ Export handoff ZIP' }).click();
+  const download = await downloadPromise;
+  const bundlePath = await download.path();
+  expect(bundlePath).toBeTruthy();
+
+  await request.post(`/api/workspaces/${target.id}/tools`, {
+    data: { tool: 'create_object', arguments: { name: 'Existing target object', type: 'sphere' } },
+  });
+  const before = (await request
+    .get(`/api/workspaces/${target.id}/state`)
+    .then((response) => response.json())) as Scene;
+  await page.goto(`/?workspace=${target.id}`);
+  await page.getByLabel('Bundle scene name').fill('Imported-specialist-scene');
+  let importStarted!: () => void;
+  const importStartedPromise = new Promise<void>((resolve) => {
+    importStarted = resolve;
+  });
+  await page.route(`**/api/workspaces/${target.id}/bundles/import`, async (route) => {
+    importStarted();
+    const response = await route.fetch();
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    await route.fulfill({ response });
+  });
+  await page.getByLabel('Scene bundle ZIP').setInputFiles(bundlePath!);
+  await importStartedPromise;
+  await expect(page.getByRole('status').filter({ hasText: 'Importing bundle' })).toBeVisible();
+  await expect(page.getByLabel('Scene bundle ZIP')).toBeDisabled();
+  await expect(
+    page.getByRole('status').filter({ hasText: 'Imported editable save' }),
+  ).toBeVisible();
+  await expect(page.getByRole('status').filter({ hasText: 'load_scene' })).toBeVisible();
+  const after = (await request
+    .get(`/api/workspaces/${target.id}/state`)
+    .then((response) => response.json())) as Scene;
+  expect(after.revision).toBe(before.revision);
+  expect(after.objects.map((object) => object.name)).toContain('Existing target object');
+  await expect(page.getByRole('button', { name: /Existing target object/ })).toBeVisible();
 });
 
 test('@smoke clears a scoped asset picker after import and allows selecting the same file again', async ({
