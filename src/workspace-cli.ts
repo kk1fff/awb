@@ -56,7 +56,9 @@ if (command === 'create') {
         process.exitCode = 1;
       }
     } else {
-      const workspace = await localManager().create(input);
+      const manager = localManager();
+      await manager.ensureStorage();
+      const workspace = await manager.create(input);
       result = { workspace };
     }
     if (process.exitCode !== 1) {
@@ -74,7 +76,9 @@ if (command === 'create') {
     result = await response.json();
     if (!response.ok) process.exitCode = 1;
   } else {
-    result = { workspaces: await localManager().list() };
+    const manager = localManager();
+    await manager.ensureStorage();
+    result = { workspaces: await manager.list() };
   }
   console.log(JSON.stringify(result, null, 2));
 } else {

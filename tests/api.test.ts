@@ -68,6 +68,7 @@ beforeEach(async () => {
   await new Promise<void>((resolve) => server.on('listening', resolve));
   base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   options.clientUrl = base;
+  service.options.clientUrl = base;
 });
 afterEach(async () => {
   await new Promise<void>((resolve, reject) => server.close((e) => (e ? reject(e) : resolve())));
@@ -201,7 +202,7 @@ describe('public tool API', () => {
     expect(missing.sceneRevision).toBe(4);
   });
   it('searches a local catalog and rejects paths that escape its directory', async () => {
-    const assets = path.join(root, 'data', 'assets');
+    const assets = path.join(root, 'data', 'workspaces', 'default', 'assets');
     await mkdir(path.join(assets, 'models'), { recursive: true });
     await mkdir(path.join(assets, 'textures'), { recursive: true });
     await mkdir(path.join(assets, 'lighting'), { recursive: true });
@@ -362,7 +363,10 @@ describe('public tool API', () => {
     expect(truncated.status).toBe(400);
     expect(await truncated.json()).toMatchObject({ error: { code: 'INVALID_ASSET_FILE' } });
     const catalog = JSON.parse(
-      await readFile(path.join(root, 'data', 'assets', 'catalog.json'), 'utf8'),
+      await readFile(
+        path.join(root, 'data', 'workspaces', 'default', 'assets', 'catalog.json'),
+        'utf8',
+      ),
     ) as { assets: { id: string }[] };
     expect(catalog.assets.map((asset) => asset.id)).toEqual([house.id, hdr.id, texture.id]);
   });
@@ -492,7 +496,12 @@ describe('public tool API', () => {
       expect(rejected.error?.code).toBe('VALIDATION_ERROR');
     }
     const saved = await call('save_scene', { name: 'lighting-controls' });
-    const fresh = await createApp({ ...service.options, runId: 'lighting-controls-fresh' });
+    const fresh = await createApp({
+      ...service.options,
+      dataDir: path.join(root, 'data'),
+      artifactsDir: path.join(root, 'runs'),
+      runId: 'lighting-controls-fresh',
+    });
     const loaded = await fresh.service.execute({
       tool: 'load_scene',
       arguments: { name: 'lighting-controls' },
@@ -520,7 +529,12 @@ describe('public tool API', () => {
     expect((await get<Scene>('/api/state')).camera).toEqual(camera);
 
     await call('save_scene', { name: 'perspective-camera' });
-    const fresh = await createApp({ ...service.options, runId: 'perspective-camera-fresh' });
+    const fresh = await createApp({
+      ...service.options,
+      dataDir: path.join(root, 'data'),
+      artifactsDir: path.join(root, 'runs'),
+      runId: 'perspective-camera-fresh',
+    });
     const loaded = await fresh.service.execute({
       tool: 'load_scene',
       arguments: { name: 'perspective-camera' },
@@ -533,7 +547,12 @@ describe('public tool API', () => {
     const expected = await get<Scene>('/api/state');
     const saved = await call('save_scene', { name: 'garden' });
     expect(saved.sceneRevision).toBe(1);
-    const fresh = await createApp({ ...service.options, runId: 'fresh' });
+    const fresh = await createApp({
+      ...service.options,
+      dataDir: path.join(root, 'data'),
+      artifactsDir: path.join(root, 'runs'),
+      runId: 'fresh',
+    });
     const loaded = await fresh.service.execute({
       tool: 'load_scene',
       arguments: { name: 'garden' },
@@ -552,10 +571,10 @@ describe('public tool API', () => {
   });
   it('rejects missing, corrupt and unsupported saves without changing state', async () => {
     expect((await call('load_scene', { name: 'missing' })).error?.code).toBe('SAVE_NOT_FOUND');
-    await writeFile(path.join(root, 'data/scenes/corrupt.json'), '{');
+    await writeFile(path.join(root, 'data/workspaces/default/scenes/corrupt.json'), '{');
     expect((await call('load_scene', { name: 'corrupt' })).error?.code).toBe('INVALID_SCENE');
     await writeFile(
-      path.join(root, 'data/scenes/future.json'),
+      path.join(root, 'data/workspaces/default/scenes/future.json'),
       JSON.stringify({ schemaVersion: 9 }),
     );
     expect((await call('load_scene', { name: 'future' })).error?.code).toBe('UNSUPPORTED_VERSION');
@@ -657,7 +676,10 @@ describe('public tool API', () => {
   it('surfaces storage failures without changing scene state', async () => {
     await call('create_object', { name: 'Keep me', type: 'box' });
     const before = await get<Scene>('/api/state');
-    await rename(path.join(root, 'data/scenes'), path.join(root, 'data/scenes-offline'));
+    await rename(
+      path.join(root, 'data/workspaces/default/scenes'),
+      path.join(root, 'data/workspaces/default/scenes-offline'),
+    );
     const result = await call('save_scene', { name: 'unavailable' });
     expect(result.error?.code).toBe('IO_ERROR');
     expect(await get('/api/state')).toEqual(before);
