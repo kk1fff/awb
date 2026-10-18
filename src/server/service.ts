@@ -51,6 +51,7 @@ export interface ServiceOptions {
   promoteAsset?: (args: Record<string, unknown>) => Promise<unknown>;
   getWorkspaceContext?: () => Promise<unknown>;
   updateWorkspaceContext?: (patch: Record<string, unknown>) => Promise<unknown>;
+  assertWorkspaceWritable?: () => Promise<void>;
 }
 export async function atomicJson(file: string, value: unknown): Promise<void> {
   const temp = `${file}.${randomUUID()}.tmp`;
@@ -339,9 +340,36 @@ export class ToolService {
     }
   }
   execute(input: unknown, rejection?: ToolError): Promise<ToolResponse> {
-    const next = this.queue.then(() => this.run(input, rejection));
+    const next = this.queue.then(async () => {
+      const request = envelope.safeParse(input);
+      const readOnlyTools = new Set([
+        'list_objects',
+        'inspect_object',
+        'search_assets',
+        'get_workspace_context',
+      ]);
+      if (!rejection && request.success && !readOnlyTools.has(request.data.tool)) {
+        try {
+          await this.assertWorkspaceWritable();
+        } catch (error) {
+          return {
+            success: false,
+            executionId: randomUUID(),
+            sceneRevision: this.engine.snapshot().revision,
+            error: {
+              code: error instanceof ToolError ? error.code : 'WORKSPACE_READ_ONLY',
+              message: error instanceof Error ? error.message : String(error),
+            },
+          };
+        }
+      }
+      return this.run(input, rejection);
+    });
     this.queue = next.catch(() => undefined);
     return next;
+  }
+  async assertWorkspaceWritable(): Promise<void> {
+    await this.options.assertWorkspaceWritable?.();
   }
   serialize<T>(operation: () => Promise<T>): Promise<T> {
     const next = this.queue.then(operation);

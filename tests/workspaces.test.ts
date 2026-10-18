@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import type { Server } from 'node:http';
@@ -301,5 +303,279 @@ describe('isolated workspaces', () => {
     expect(await failingService.assets.search('Specialist tree', 'model', 20)).toEqual([
       targetAsset,
     ]);
+  });
+
+  it('archives, restores, and purges UUID workspaces with restart-safe read-only behavior', async () => {
+    root = await mkdtemp(path.join(tmpdir(), 'fieldwork-workspace-lifecycle-'));
+    const options = {
+      dataDir: path.join(root, 'data'),
+      artifactsDir: path.join(root, 'runs'),
+      runId: 'lifecycle-default-one',
+      clientUrl: '',
+    };
+    let app = await createApp(options);
+    server = app.app.listen(0, '127.0.0.1');
+    await new Promise<void>((resolve) => server!.on('listening', resolve));
+    base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    const request = async (route: string, init?: RequestInit) => fetch(`${base}${route}`, init);
+    const createdResponse = await request('/api/workspaces', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Lifecycle target', goal: 'Check lifecycle' }),
+    });
+    const created = (await createdResponse.json()) as { workspace: { id: string; runId: string } };
+    const id = created.workspace.id;
+    const toolPath = `/api/workspaces/${id}/tools`;
+    const makeInitial = async (tool: string, args: unknown = {}) =>
+      request(toolPath, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tool, arguments: args }),
+      });
+    expect(
+      (await makeInitial('create_object', { name: 'Archived evidence', type: 'box' })).status,
+    ).toBe(200);
+    expect((await makeInitial('save_scene', { name: 'before-archive' })).status).toBe(200);
+    const archiveDefault = await request('/api/workspaces/default/archive', { method: 'POST' });
+    expect(archiveDefault.status).toBe(400);
+    await expect(app.workspaces.purge('default', 'default')).rejects.toMatchObject({
+      code: 'INVALID_WORKSPACE_LIFECYCLE',
+    });
+
+    const archivedResponse = await request(`/api/workspaces/${id}/archive`, { method: 'POST' });
+    expect(archivedResponse.status).toBe(200);
+    expect(await archivedResponse.json()).toMatchObject({
+      workspace: { id, workspaceStatus: 'archived', active: false },
+    });
+    expect(await (await request(`/api/workspaces/${id}/context`)).json()).toMatchObject({
+      context: {
+        id,
+        workspaceStatus: 'archived',
+        goal: 'Check lifecycle',
+        availableSaves: ['before-archive'],
+      },
+    });
+    await expect(app.workspaces.get(id)).rejects.toMatchObject({ code: 'WORKSPACE_ARCHIVED' });
+    expect((await request(`/api/workspaces/${id}/state`)).status).toBe(200);
+    expect(
+      ((await (await request(`/api/workspaces/${id}/events`)).json()) as unknown[]).length,
+    ).toBe(2);
+    expect(
+      (
+        await request(toolPath, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            tool: 'create_object',
+            arguments: { name: 'Blocked', type: 'box' },
+          }),
+        })
+      ).status,
+    ).toBe(409);
+    expect(
+      (
+        await request(`/api/workspaces/${id}/context`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ currentTask: 'Should be blocked' }),
+        })
+      ).status,
+    ).toBe(400);
+    await new Promise<void>((resolve) => server!.close(() => resolve()));
+    server = undefined;
+    options.runId = 'lifecycle-default-two';
+    app = await createApp(options);
+    server = app.app.listen(0, '127.0.0.1');
+    await new Promise<void>((resolve) => server!.on('listening', resolve));
+    base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    expect(await (await request(`/api/workspaces/${id}`)).json()).toMatchObject({
+      workspace: { workspaceStatus: 'archived', active: false },
+    });
+    expect(await (await request(`/api/workspaces/${id}/context`)).json()).toMatchObject({
+      context: {
+        workspaceStatus: 'archived',
+        availableSaves: ['before-archive'],
+        runId: created.workspace.runId,
+      },
+    });
+    const restored = await request(`/api/workspaces/${id}/restore`, { method: 'POST' });
+    expect(await restored.json()).toMatchObject({
+      workspace: { id, workspaceStatus: 'active' },
+    });
+    expect(
+      (
+        await request(toolPath, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            tool: 'create_object',
+            arguments: { name: 'Restored', type: 'box' },
+          }),
+        })
+      ).status,
+    ).toBe(200);
+    const unarchivedPurge = await request(`/api/workspaces/${id}`, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ confirmWorkspaceId: id }),
+    });
+    expect(unarchivedPurge.status).toBe(400);
+    await request(`/api/workspaces/${id}/archive`, { method: 'POST' });
+    const wrongConfirmation = await request(`/api/workspaces/${id}`, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ confirmWorkspaceId: randomUUID() }),
+    });
+    expect(wrongConfirmation.status).toBe(400);
+    const purged = await request(`/api/workspaces/${id}`, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ confirmWorkspaceId: id }),
+    });
+    expect(purged.status).toBe(200);
+    expect(await purged.json()).toEqual({ id, purged: true });
+    await expect(access(path.join(root, 'data/workspaces', id))).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+    expect((await request(`/api/workspaces/${id}`)).status).toBe(404);
+  });
+
+  it('supports lifecycle commands from the setup CLI without a running API', async () => {
+    const cliRoot = await mkdtemp(path.join(tmpdir(), 'fieldwork-workspace-cli-lifecycle-'));
+    const runCli = (...args: string[]) =>
+      execFileSync(
+        process.execPath,
+        ['node_modules/tsx/dist/cli.mjs', 'src/workspace-cli.ts', ...args],
+        {
+          cwd: process.cwd(),
+          env: {
+            ...process.env,
+            DATA_DIR: path.join(cliRoot, 'data'),
+            ARTIFACTS_DIR: path.join(cliRoot, 'runs'),
+            SCENE_API: 'http://127.0.0.1:1',
+          },
+          encoding: 'utf8',
+        },
+      );
+    const createdOutput = runCli(
+      'create',
+      '--name',
+      'CLI lifecycle',
+      '--goal',
+      'Exercise setup CLI',
+    );
+    const created = JSON.parse(createdOutput.slice(0, createdOutput.indexOf('\n\nSet '))) as {
+      workspace: { id: string };
+    };
+    const id = created.workspace.id;
+    expect(JSON.parse(runCli('archive', '--id', id))).toMatchObject({
+      workspace: { id, workspaceStatus: 'archived' },
+    });
+    expect(JSON.parse(runCli('restore', '--id', id))).toMatchObject({
+      workspace: { id, workspaceStatus: 'active' },
+    });
+    runCli('archive', '--id', id);
+    expect(JSON.parse(runCli('purge', '--id', id, '--confirm', id))).toEqual({ id, purged: true });
+    await expect(access(path.join(cliRoot, 'data/workspaces', id))).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+    await rm(cliRoot, { recursive: true, force: true });
+  });
+
+  it('waits for accepted writes before archive and purge, then rejects queued/new writes', async () => {
+    root = await mkdtemp(path.join(tmpdir(), 'fieldwork-workspace-lifecycle-race-'));
+    const options = {
+      dataDir: path.join(root, 'data'),
+      artifactsDir: path.join(root, 'runs'),
+      runId: 'lifecycle-race-default',
+      clientUrl: '',
+    };
+    const app = await createApp(options);
+    server = app.app.listen(0, '127.0.0.1');
+    await new Promise<void>((resolve) => server!.on('listening', resolve));
+    base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    const request = async (route: string, init?: RequestInit) => fetch(`${base}${route}`, init);
+    const created = (await (
+      await request('/api/workspaces', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Race target', goal: 'Serialize lifecycle changes' }),
+      })
+    ).json()) as { workspace: { id: string } };
+    const id = created.workspace.id;
+    const workspaceDir = path.join(root, 'data/workspaces', id);
+    const targetService = await app.workspaces.get(id);
+    const originalImport = targetService.assets.importLocalAsset.bind(targetService.assets);
+    let signalImportStarted!: () => void;
+    const importStarted = new Promise<void>((resolve) => (signalImportStarted = resolve));
+    let releaseImport!: () => void;
+    const importGate = new Promise<void>((resolve) => (releaseImport = resolve));
+    targetService.assets.importLocalAsset = async (input) => {
+      signalImportStarted();
+      await importGate;
+      return originalImport(input);
+    };
+    const upload = request(`/api/workspaces/${id}/assets/import`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/octet-stream',
+        'X-Asset-Name': 'Racing import',
+        'X-Asset-File-Name': 'racing.glb',
+        'X-Asset-Tags': '%5B%5D',
+      },
+      body: Uint8Array.from(tinyGlb()),
+    });
+    await importStarted;
+    const queuedTool = request(`/api/workspaces/${id}/tools`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        tool: 'create_object',
+        arguments: { name: 'Late write', type: 'box' },
+      }),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    let archiveFinished = false;
+    const archive = request(`/api/workspaces/${id}/archive`, { method: 'POST' }).then(
+      (response) => {
+        archiveFinished = true;
+        return response;
+      },
+    );
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(archiveFinished).toBe(false);
+    releaseImport();
+    expect((await upload).status).toBe(201);
+    expect((await archive).status).toBe(200);
+    expect((await queuedTool).status).toBe(422);
+    expect(
+      ((await (await request(`/api/workspaces/${id}/state`)).json()) as Scene).objects,
+    ).toEqual([]);
+
+    let signalDelayedWrite!: () => void;
+    const delayedWriteStarted = new Promise<void>((resolve) => (signalDelayedWrite = resolve));
+    let releaseDelayedWrite!: () => void;
+    const delayedWriteGate = new Promise<void>((resolve) => (releaseDelayedWrite = resolve));
+    const delayedWrite = targetService.serialize(async () => {
+      signalDelayedWrite();
+      await delayedWriteGate;
+      await writeFile(path.join(workspaceDir, 'delayed-finish.txt'), 'finished before purge');
+    });
+    await delayedWriteStarted;
+    let purgeFinished = false;
+    const purge = request(`/api/workspaces/${id}`, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ confirmWorkspaceId: id }),
+    }).then((response) => {
+      purgeFinished = true;
+      return response;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(purgeFinished).toBe(false);
+    releaseDelayedWrite();
+    await delayedWrite;
+    expect((await purge).status).toBe(200);
+    await expect(access(workspaceDir)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 });

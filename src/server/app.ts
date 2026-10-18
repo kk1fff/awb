@@ -29,7 +29,9 @@ async function registerServiceRoutes(router: Router, service: ToolService, works
             'Provide the target save name in X-Scene-Name.',
           );
         const result = await service.serialize(() =>
-          importSceneBundle(service, req.body as Buffer, sceneName),
+          service
+            .assertWorkspaceWritable()
+            .then(() => importSceneBundle(service, req.body as Buffer, sceneName)),
         );
         res.status(201).json(result);
       } catch (error) {
@@ -65,12 +67,14 @@ async function registerServiceRoutes(router: Router, service: ToolService, works
         if (!Buffer.isBuffer(req.body))
           throw new ToolError('INVALID_ASSET_FILE', 'Upload a file as application/octet-stream.');
         const asset = await service.serialize(() =>
-          service.assets.importLocalAsset({
-            name: decode(req.header('x-asset-name'), 'asset name'),
-            fileName: decode(req.header('x-asset-file-name'), 'file name'),
-            tags,
-            data: req.body as Buffer,
-          }),
+          service.assertWorkspaceWritable().then(() =>
+            service.assets.importLocalAsset({
+              name: decode(req.header('x-asset-name'), 'asset name'),
+              fileName: decode(req.header('x-asset-file-name'), 'file name'),
+              tags,
+              data: req.body as Buffer,
+            }),
+          ),
         );
         res.status(201).json({ asset });
       } catch (error) {
@@ -244,6 +248,33 @@ export async function createApp(options: ServiceOptions & { clientDir?: string }
       next(error);
     }
   });
+  app.post('/api/workspaces/:workspaceId/archive', async (req, res, next) => {
+    try {
+      res.json({ workspace: await manager.archive(String(req.params.workspaceId)) });
+    } catch (error) {
+      next(error);
+    }
+  });
+  app.post('/api/workspaces/:workspaceId/restore', async (req, res, next) => {
+    try {
+      res.json({ workspace: await manager.restore(String(req.params.workspaceId)) });
+    } catch (error) {
+      next(error);
+    }
+  });
+  app.delete('/api/workspaces/:workspaceId', async (req, res, next) => {
+    try {
+      const confirmation = z
+        .object({ confirmWorkspaceId: z.string().uuid() })
+        .strict()
+        .parse(req.body);
+      res.json(
+        await manager.purge(String(req.params.workspaceId), confirmation.confirmWorkspaceId),
+      );
+    } catch (error) {
+      next(error);
+    }
+  });
   const defaultRouter = express.Router();
   await registerServiceRoutes(defaultRouter, service, 'default');
   app.use('/api', defaultRouter);
@@ -257,7 +288,17 @@ export async function createApp(options: ServiceOptions & { clientDir?: string }
         res.status(404).json({ error: 'Use /api/* for the default workspace.' });
         return;
       }
-      const target = await manager.get(String(id));
+      const descriptor = await manager.describe(String(id));
+      if (descriptor.workspaceStatus === 'archived' && req.method !== 'GET') {
+        res.status(409).json({
+          error: {
+            code: 'WORKSPACE_ARCHIVED',
+            message: 'Restore the workspace before making changes.',
+          },
+        });
+        return;
+      }
+      const target = await manager.getForBrowsing(String(id));
       res.locals.workspaceService = target;
       next();
     } catch (error) {

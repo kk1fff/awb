@@ -81,9 +81,40 @@ if (command === 'create') {
     result = { workspaces: await manager.list() };
   }
   console.log(JSON.stringify(result, null, 2));
+} else if (['archive', 'restore', 'purge'].includes(command ?? '')) {
+  const id = option('id');
+  if (!id) {
+    console.error(
+      `Usage: npm run workspace -- ${command} --id <workspace-uuid>${command === 'purge' ? ' --confirm <same-workspace-uuid>' : ''}`,
+    );
+    process.exitCode = 2;
+  } else {
+    let result: unknown;
+    if (await apiIsRunning()) {
+      const response = await fetch(
+        `${api}/api/workspaces/${encodeURIComponent(id)}${command === 'archive' ? '/archive' : command === 'restore' ? '/restore' : ''}`,
+        {
+          method: command === 'purge' ? 'DELETE' : 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          ...(command === 'purge'
+            ? { body: JSON.stringify({ confirmWorkspaceId: option('confirm') ?? '' }) }
+            : { body: '{}' }),
+        },
+      );
+      result = await response.json();
+      if (!response.ok) process.exitCode = 1;
+    } else {
+      const manager = localManager();
+      await manager.ensureStorage();
+      if (command === 'archive') result = { workspace: await manager.archive(id) };
+      else if (command === 'restore') result = { workspace: await manager.restore(id) };
+      else result = await manager.purge(id, option('confirm') ?? '');
+    }
+    console.log(JSON.stringify(result, null, 2));
+  }
 } else {
   console.log(
-    'Usage: npm run workspace -- <create|list> ...\nCreate requires --name and --goal. Set SCENE_API to choose a live API; without one, the command uses DATA_DIR and ARTIFACTS_DIR directly.',
+    'Usage: npm run workspace -- <create|list|archive|restore|purge> ...\nCreate requires --name and --goal. Lifecycle commands require --id; purge also requires --confirm <same-workspace-uuid>. Set SCENE_API to choose a live API; without one, the command uses DATA_DIR and ARTIFACTS_DIR directly.',
   );
   process.exitCode = command ? 2 : 0;
 }

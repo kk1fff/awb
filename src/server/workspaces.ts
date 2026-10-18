@@ -297,6 +297,7 @@ export class WorkspaceManager {
   private readonly workspaceRoot: string;
   private readonly defaultRoot: string;
   private readonly metadataQueues = new Map<string, Promise<unknown>>();
+  private readonly lifecycleTransitions = new Set<string>();
   constructor(private readonly options: ServiceOptions) {
     this.workspaceRoot = path.resolve(options.dataDir, 'workspaces');
     this.defaultRoot = path.join(this.workspaceRoot, 'default');
@@ -447,7 +448,7 @@ export class WorkspaceManager {
             ...((activeService?.options.runId ?? manifest.lastRunId)
               ? { runId: activeService?.options.runId ?? manifest.lastRunId }
               : {}),
-            active: Boolean(activeService),
+            active: manifest.workspaceStatus === 'active' && Boolean(activeService),
           });
         }
       } catch {
@@ -473,7 +474,7 @@ export class WorkspaceManager {
       ...((activeService?.options.runId ?? manifest.lastRunId)
         ? { runId: activeService?.options.runId ?? manifest.lastRunId }
         : {}),
-      active: Boolean(activeService),
+      active: manifest.workspaceStatus === 'active' && Boolean(activeService),
     };
   }
 
@@ -522,8 +523,123 @@ export class WorkspaceManager {
     const manifest = await this.readManifest(id);
     // Context is an explicit agent entry point; opening the workspace lets it report recovery
     // health as well as persisted metadata. Listing workspaces remains lazy and does not open runs.
-    await this.get(id);
+    if (manifest.workspaceStatus === 'active') await this.getForBrowsing(id);
     return this.toContext(manifest);
+  }
+
+  async archive(id: string): Promise<WorkspaceManifest & { active: false }> {
+    if (id === 'default' || !validWorkspace(id))
+      throw new ToolError(
+        'INVALID_WORKSPACE_LIFECYCLE',
+        'The default workspace cannot be archived.',
+      );
+    this.beginLifecycleTransition(id);
+    try {
+      const result = await this.queueMetadataChange(id, async () => {
+        await this.opening.get(id);
+        const persistArchive = async () => {
+          const manifest = await this.readManifest(id);
+          if (manifest.workspaceStatus === 'archived') return;
+          await atomicJson(path.join(this.workspaceRoot, id, 'workspace.json'), {
+            ...manifest,
+            workspaceStatus: 'archived',
+            metadataRevision: manifest.metadataRevision + 1,
+            updatedAt: new Date().toISOString(),
+          });
+        };
+        const service = this.services.get(id);
+        if (service) await service.serialize(persistArchive);
+        else await persistArchive();
+        return this.describe(id);
+      });
+      return { ...result, active: false };
+    } finally {
+      this.lifecycleTransitions.delete(id);
+    }
+  }
+
+  async restore(id: string): Promise<WorkspaceManifest & { active: boolean }> {
+    if (id === 'default' || !validWorkspace(id))
+      throw new ToolError(
+        'INVALID_WORKSPACE_LIFECYCLE',
+        'The default workspace cannot be restored.',
+      );
+    this.beginLifecycleTransition(id);
+    try {
+      return await this.queueMetadataChange(id, async () => {
+        await this.opening.get(id);
+        const manifest = await this.readManifest(id);
+        if (manifest.workspaceStatus !== 'active') {
+          await atomicJson(path.join(this.workspaceRoot, id, 'workspace.json'), {
+            ...manifest,
+            workspaceStatus: 'active',
+            metadataRevision: manifest.metadataRevision + 1,
+            updatedAt: new Date().toISOString(),
+          });
+        }
+        return this.describe(id);
+      });
+    } finally {
+      this.lifecycleTransitions.delete(id);
+    }
+  }
+
+  async purge(id: string, confirmation: string): Promise<{ id: string; purged: true }> {
+    if (id === 'default' || !validWorkspace(id))
+      throw new ToolError('INVALID_WORKSPACE_LIFECYCLE', 'The default workspace cannot be purged.');
+    if (confirmation !== id)
+      throw new ToolError(
+        'PURGE_CONFIRMATION_REQUIRED',
+        `Confirm purge by providing the exact workspace ID '${id}'.`,
+      );
+    this.beginLifecycleTransition(id);
+    try {
+      return await this.queueMetadataChange(id, async () => {
+        await this.opening.get(id);
+        const manifest = await this.readManifest(id);
+        if (manifest.workspaceStatus !== 'archived')
+          throw new ToolError('WORKSPACE_NOT_ARCHIVED', 'Archive the workspace before purging it.');
+        const service = this.services.get(id);
+        if (service) await service.serialize(async () => undefined);
+        const directory = path.resolve(this.workspaceRoot, id);
+        if (path.dirname(directory) !== this.workspaceRoot || path.basename(directory) !== id)
+          throw new ToolError(
+            'INVALID_WORKSPACE_LIFECYCLE',
+            'Workspace path failed safety checks.',
+          );
+        const info = await lstat(directory);
+        if (!info.isDirectory() || info.isSymbolicLink())
+          throw new ToolError(
+            'INVALID_WORKSPACE_LIFECYCLE',
+            'Workspace path is not a safe directory.',
+          );
+        this.services.delete(id);
+        await rm(directory, { recursive: true, force: false });
+        return { id, purged: true as const };
+      });
+    } finally {
+      this.lifecycleTransitions.delete(id);
+    }
+  }
+
+  private beginLifecycleTransition(id: string): void {
+    if (this.lifecycleTransitions.has(id))
+      throw new ToolError(
+        'WORKSPACE_LIFECYCLE_BUSY',
+        'Another lifecycle operation is in progress.',
+      );
+    this.lifecycleTransitions.add(id);
+  }
+
+  private async queueMetadataChange<T>(id: string, operation: () => Promise<T>): Promise<T> {
+    const previous = this.metadataQueues.get(id) ?? Promise.resolve();
+    const task = previous.then(operation);
+    this.metadataQueues.set(id, task);
+    try {
+      return await task;
+    } finally {
+      if (this.metadataQueues.get(id) === task) this.metadataQueues.delete(id);
+    }
   }
 
   async updateContext(
@@ -533,6 +649,16 @@ export class WorkspaceManager {
     const previous = this.metadataQueues.get(id) ?? Promise.resolve();
     const task = previous.then(async () => {
       const manifest = await this.readManifest(id);
+      if (this.lifecycleTransitions.has(id))
+        throw new ToolError(
+          'WORKSPACE_LIFECYCLE_BUSY',
+          'A workspace lifecycle change is in progress.',
+        );
+      if (manifest.workspaceStatus === 'archived')
+        throw new ToolError(
+          'WORKSPACE_ARCHIVED',
+          'Restore the workspace before changing its context.',
+        );
       const next = {
         ...manifest,
         ...patch,
@@ -550,6 +676,22 @@ export class WorkspaceManager {
     } finally {
       if (this.metadataQueues.get(id) === task) this.metadataQueues.delete(id);
     }
+  }
+
+  async assertWritable(id: string): Promise<void> {
+    if (this.lifecycleTransitions.has(id))
+      throw new ToolError(
+        'WORKSPACE_LIFECYCLE_BUSY',
+        'A workspace lifecycle change is in progress.',
+      );
+    const manifest = await this.readManifest(id);
+    if (manifest.workspaceStatus === 'archived')
+      throw new ToolError('WORKSPACE_ARCHIVED', 'Restore the workspace before making changes.');
+    if (this.lifecycleTransitions.has(id))
+      throw new ToolError(
+        'WORKSPACE_LIFECYCLE_BUSY',
+        'A workspace lifecycle change is in progress.',
+      );
   }
 
   private async readManifest(id: string): Promise<WorkspaceManifest> {
@@ -742,9 +884,58 @@ export class WorkspaceManager {
   async get(id: string): Promise<ToolService> {
     if (!validWorkspace(id))
       throw new ToolError('WORKSPACE_NOT_FOUND', `Invalid workspace ID '${id}'.`);
+    if (id === 'default') return this.defaultService;
+    if (this.lifecycleTransitions.has(id))
+      throw new ToolError(
+        'WORKSPACE_LIFECYCLE_BUSY',
+        'A workspace lifecycle change is in progress.',
+      );
+    const manifest = await this.readManifest(id);
+    if (this.lifecycleTransitions.has(id))
+      throw new ToolError(
+        'WORKSPACE_LIFECYCLE_BUSY',
+        'A workspace lifecycle change is in progress.',
+      );
+    if (manifest.workspaceStatus === 'archived')
+      throw new ToolError(
+        'WORKSPACE_ARCHIVED',
+        'Restore the workspace before binding an agent to it.',
+      );
     const existing = this.services.get(id);
     if (existing) return existing;
+    const pending = this.opening.get(id);
+    if (pending) return pending;
+    const task = this.openManifest(id);
+    this.opening.set(id, task);
+    try {
+      return await task;
+    } finally {
+      this.opening.delete(id);
+    }
+  }
+
+  async getForBrowsing(id: string): Promise<ToolService> {
+    if (!validWorkspace(id))
+      throw new ToolError('WORKSPACE_NOT_FOUND', `Invalid workspace ID '${id}'.`);
     if (id === 'default') return this.defaultService;
+    if (this.lifecycleTransitions.has(id))
+      throw new ToolError(
+        'WORKSPACE_LIFECYCLE_BUSY',
+        'A workspace lifecycle change is in progress.',
+      );
+    const existing = this.services.get(id);
+    if (existing) return existing;
+    const manifest = await this.readManifest(id);
+    if (this.lifecycleTransitions.has(id))
+      throw new ToolError(
+        'WORKSPACE_LIFECYCLE_BUSY',
+        'A workspace lifecycle change is in progress.',
+      );
+    if (manifest.workspaceStatus === 'archived')
+      throw new ToolError(
+        'WORKSPACE_ARCHIVED_HISTORY_ONLY',
+        'Archived workspace metadata and historical artifacts remain available; restore it to open a live scene view.',
+      );
     const pending = this.opening.get(id);
     if (pending) return pending;
     const task = this.openManifest(id);
@@ -775,6 +966,7 @@ export class WorkspaceManager {
       promoteAsset: (args) => this.promote(service, args),
       getWorkspaceContext: () => this.context(id),
       updateWorkspaceContext: (patch) => this.updateContext(id, patch),
+      assertWorkspaceWritable: () => this.assertWritable(id),
     });
     await service.init();
     await atomicJson(path.join(dataDir, 'workspace.json'), { ...manifest, lastRunId: runId });
