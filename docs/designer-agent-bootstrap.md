@@ -5,7 +5,7 @@ Use this guide when asked to build or improve a scene with Fieldwork. The host a
 ## Before scene work
 
 1. Identify the task mode. Build or edit a scene through public tools and the UI. Change application source only when the user asks for a product, interface, or workflow change.
-2. Read the current scene and workspace before changing anything. Select the workspace explicitly: MCP/CLI clients use `SCENE_WORKSPACE_ID`; the browser uses `/?workspace=<uuid>`. Omit the workspace ID for the legacy `default` workspace.
+2. Read the current scene and workspace before changing anything. Select the workspace explicitly: on a shared MCP connection, include top-level `workspaceId` on every tool call (`default` or a workspace UUID); a dedicated MCP/CLI process can use `SCENE_WORKSPACE_ID`; the browser uses `/?workspace=<uuid>`. Omit the selector only when intentionally using that MCP process's configured workspace. The HTTP/CLI command argument schemas do not include this MCP-only routing field.
 3. If the work needs specialists, delegate through the host runtime. Create one workspace per specialist with `POST /api/workspaces`, then give each specialist its own workspace UUID and task. Workspaces isolate app state logically; they are not OS or security boundaries.
 4. Keep designer scene work paused while an engineer is changing shared application source. Resume after review/commit and rerun the scene from a fresh scene using the accepted goal and criteria.
 
