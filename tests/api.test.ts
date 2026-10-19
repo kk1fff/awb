@@ -432,7 +432,7 @@ describe('public tool API', () => {
     expect(Buffer.from(await response.arrayBuffer())).toEqual(guide);
     for (const phrase of [
       'host agent runtime',
-      'one workspace per specialist',
+      'one session per specialist',
       'Promote explicitly',
       'photographic plausibility',
     ])
@@ -463,7 +463,9 @@ describe('public tool API', () => {
 
   it('discovers every tool and exercises create, inspect, list, patch and delete', async () => {
     const docs = await get<{ tools: Record<string, unknown> }>('/api/tools');
-    expect(Object.keys(docs.tools)).toHaveLength(17);
+    expect(Object.keys(docs.tools)).toHaveLength(19);
+    expect(docs.tools).toHaveProperty('get_project_info');
+    expect(docs.tools).toHaveProperty('update_project_info');
     expect(docs.tools).toHaveProperty('export_scene_bundle');
     const created = await call('create_object', {
       name: 'Tree',

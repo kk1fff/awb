@@ -122,6 +122,18 @@ const saveName = z
   .string()
   .regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$/, 'Use 1–80 letters, digits, hyphens or underscores');
 export const toolSchemas = {
+  get_project_info: z.object({}).strict(),
+  update_project_info: z
+    .object({
+      expectedRevision: z.number().int().nonnegative(),
+      goal: z.string().trim().max(2000).optional(),
+      agentContext: z.record(z.string(), z.json()).optional(),
+    })
+    .strict()
+    .refine(
+      (value) => value.goal !== undefined || value.agentContext !== undefined,
+      'Provide goal or agentContext.',
+    ),
   get_workspace_context: z.object({}).strict(),
   update_workspace_context: z
     .object({

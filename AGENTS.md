@@ -16,9 +16,9 @@ Build a Linux-compatible 3D scene builder with two clear agent modes: **build a 
 
 ## Starting from a fresh clone
 
-- The user starts Codex, Claude Code, or OpenCode in this repository and describes the task. Infer the mode from that request; scene creation/editing is scene mode, while requests to change capabilities, bugs, UI, or workflow are tool mode.
+- The human starts Fieldwork with `./start.sh --workdir <project-dir>`, then launches Codex, Claude Code, or OpenCode in the provided shell. Infer the mode from the human's request; scene creation/editing is scene mode, while requests to change capabilities, bugs, UI, or workflow are tool mode.
 - If the request mixes modes or the intended result is unclear, ask one short, specific clarification before making changes. Do not make product changes as a side effect of scene creation.
-- The project MCP configuration starts the local app on first connection, installs npm dependencies and Playwright Chromium if missing, and opens the browser. Use the `fieldwork` MCP tools for scene work. Node.js 22.12+ and an installed, signed-in agent CLI are host prerequisites.
+- The launcher starts the local app, prepares project-scoped MCP configuration, and prints the browser URL. Use the `fieldwork` MCP tools for scene work. Record the human's goal with `update_project_info` if `get_project_info` reports an empty goal. Node.js 22.12+ and an installed, signed-in agent CLI are host prerequisites.
 - For tool mode, inspect this repository and its tests first. Start the app/browser when the change affects visible behavior or needs an end-to-end check.
 
 ## Working agreements

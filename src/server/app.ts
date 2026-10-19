@@ -7,6 +7,7 @@ import { ToolService, type ServiceOptions } from './service.js';
 import { WorkspaceManager } from './workspaces.js';
 import { ToolError } from '../engine/scene.js';
 import { importSceneBundle } from './scene-bundle.js';
+import type { ProjectStore } from './project.js';
 
 async function registerServiceRoutes(router: Router, service: ToolService, workspaceId: string) {
   const scoped = workspaceId !== 'default';
@@ -170,13 +171,52 @@ async function registerServiceRoutes(router: Router, service: ToolService, works
   });
 }
 
-export async function createApp(options: ServiceOptions & { clientDir?: string }) {
-  const manager = new WorkspaceManager(options);
+export async function createApp(
+  options: ServiceOptions & { clientDir?: string; projectStore?: ProjectStore },
+) {
+  const projectInfo = options.projectStore ? await options.projectStore.read() : undefined;
+  const manager = new WorkspaceManager({
+    ...options,
+    ...(projectInfo
+      ? {
+          projectRoot: options.projectStore!.root,
+          mainSession: projectInfo.main_session,
+          getProjectInfo: () => options.projectStore!.read(),
+          updateProjectInfo: (patch) => options.projectStore!.update(patch),
+        }
+      : {}),
+  });
   await manager.init();
   const service = manager.defaultService;
   const app = express();
   app.disable('x-powered-by');
   app.use(express.json({ limit: '1mb' }));
+
+  if (!options.projectStore) app.get('/api/project', (_req, res) => res.json({ project: null }));
+  if (options.projectStore && projectInfo) {
+    app.get('/api/project', async (_req, res, next) => {
+      try {
+        res.json({ project: await options.projectStore!.read(), runId: options.runId });
+      } catch (error) {
+        next(error);
+      }
+    });
+    app.patch('/api/project', async (req, res, next) => {
+      try {
+        const schema = z
+          .object({
+            expectedRevision: z.number().int().nonnegative(),
+            goal: z.string().trim().max(2000).optional(),
+            agentContext: z.record(z.string(), z.json()).optional(),
+          })
+          .strict()
+          .refine((value) => value.goal !== undefined || value.agentContext !== undefined);
+        res.json({ project: await options.projectStore!.update(schema.parse(req.body)) });
+      } catch (error) {
+        next(error);
+      }
+    });
+  }
 
   app.get('/api/instructions', async (_req, res, next) => {
     try {
@@ -276,7 +316,7 @@ export async function createApp(options: ServiceOptions & { clientDir?: string }
     }
   });
   const defaultRouter = express.Router();
-  await registerServiceRoutes(defaultRouter, service, 'default');
+  await registerServiceRoutes(defaultRouter, service, projectInfo?.main_session ?? 'default');
   app.use('/api', defaultRouter);
   app.use('/artifacts', express.static(service.runDir, { dotfiles: 'deny' }));
 
@@ -330,8 +370,14 @@ export async function createApp(options: ServiceOptions & { clientDir?: string }
   app.use('/api/workspaces/:workspaceId', scopedRouter);
 
   if (options.clientDir) {
-    app.use(express.static(options.clientDir));
-    app.get('/', (_req, res) => res.sendFile(path.join(options.clientDir!, 'index.html')));
+    app.use(express.static(options.clientDir, { index: false }));
+    app.get('/', (req, res) => {
+      if (projectInfo && !req.query.workspace) {
+        res.redirect(`/?workspace=${projectInfo.main_session}`);
+        return;
+      }
+      res.sendFile(path.join(options.clientDir!, 'index.html'));
+    });
   }
   const errors: ErrorRequestHandler = async (err, req, res, _next) => {
     if (req.path.endsWith('/bundles/import')) {

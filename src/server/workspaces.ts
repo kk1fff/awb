@@ -298,29 +298,77 @@ export class WorkspaceManager {
   private readonly defaultRoot: string;
   private readonly metadataQueues = new Map<string, Promise<unknown>>();
   private readonly lifecycleTransitions = new Set<string>();
-  constructor(private readonly options: ServiceOptions) {
-    this.workspaceRoot = path.resolve(options.dataDir, 'workspaces');
-    this.defaultRoot = path.join(this.workspaceRoot, 'default');
+  private readonly projectMode: boolean;
+  private readonly mainSession: string;
+  constructor(
+    private readonly options: ServiceOptions & { projectRoot?: string; mainSession?: string },
+  ) {
+    this.projectMode = Boolean(options.projectRoot);
+    this.mainSession = options.mainSession ?? 'default';
+    this.workspaceRoot = options.projectRoot
+      ? path.resolve(options.projectRoot)
+      : path.resolve(options.dataDir, 'workspaces');
+    this.defaultRoot = this.workspaceDir(this.mainSession);
     this.defaultService = new ToolService({
       ...options,
       dataDir: this.defaultRoot,
       artifactsDir: path.join(this.defaultRoot, 'runs'),
     });
-    this.defaultService.options.workspaceId = 'default';
+    this.defaultService.options.workspaceId = this.mainSession;
     this.defaultService.options.promoteAsset = (args) => this.promote(this.defaultService, args);
-    this.defaultService.options.getWorkspaceContext = () => this.context('default');
+    this.defaultService.options.getWorkspaceContext = () => this.context(this.mainSession);
     this.defaultService.options.updateWorkspaceContext = (patch) =>
-      this.updateContext('default', patch);
-    this.services.set('default', this.defaultService);
+      this.updateContext(this.mainSession, patch);
+    this.services.set(this.mainSession, this.defaultService);
+  }
+
+  private workspaceDir(id: string): string {
+    return path.join(this.workspaceRoot, this.projectMode ? `session-${id}` : id);
+  }
+
+  setClientUrl(url: string): void {
+    this.options.clientUrl = url;
+    for (const service of this.services.values()) service.options.clientUrl = url;
   }
 
   async init(): Promise<void> {
     await this.ensureStorage();
     await this.defaultService.init();
+    if (this.projectMode) {
+      const manifest = await this.readManifest(this.mainSession);
+      await atomicJson(path.join(this.defaultRoot, 'workspace.json'), {
+        ...manifest,
+        lastRunId: this.defaultService.options.runId,
+      });
+    }
     await mkdir(this.workspaceRoot, { recursive: true });
   }
 
   async ensureStorage(): Promise<void> {
+    if (this.projectMode) {
+      await mkdir(this.defaultRoot, { recursive: true });
+      const manifestPath = path.join(this.defaultRoot, 'workspace.json');
+      const existing = await lstatIfExists(manifestPath);
+      if (!existing) {
+        const now = new Date().toISOString();
+        await atomicJson(manifestPath, {
+          id: this.mainSession,
+          name: 'Main session',
+          workspaceStatus: 'active',
+          workStatus: 'planned',
+          goal: '',
+          acceptanceCriteria: [],
+          constraints: [],
+          currentTask: '',
+          summary: '',
+          metadataRevision: 0,
+          updatedAt: now,
+          createdAt: now,
+        } satisfies WorkspaceManifest);
+      }
+      await this.readManifest(this.mainSession);
+      return;
+    }
     await mkdir(this.workspaceRoot, { recursive: true });
     const releaseLock = await acquireMigrationLock(
       path.join(this.workspaceRoot, '.storage-migration.lock'),
@@ -432,17 +480,24 @@ export class WorkspaceManager {
     const entries = await readdir(this.workspaceRoot, { withFileTypes: true }).catch(() => []);
     const result: Array<WorkspaceManifest & { runId?: string; active: boolean }> = [
       {
-        ...(await this.context('default')),
+        ...(await this.context(this.mainSession)),
         runId: this.defaultService.options.runId,
         active: true,
       },
     ];
     for (const entry of entries) {
-      if (!entry.isDirectory() || !validWorkspace(entry.name) || entry.name === 'default') continue;
+      const id = this.projectMode ? entry.name.replace(/^session-/, '') : entry.name;
+      if (
+        !entry.isDirectory() ||
+        (this.projectMode && entry.name !== `session-${id}`) ||
+        !validWorkspace(id) ||
+        id === this.mainSession
+      )
+        continue;
       try {
-        const manifest = await this.readManifest(entry.name);
-        if (manifest.id === entry.name) {
-          const activeService = this.services.get(entry.name);
+        const manifest = await this.readManifest(id);
+        if (manifest.id === id) {
+          const activeService = this.services.get(id);
           result.push({
             ...manifest,
             ...((activeService?.options.runId ?? manifest.lastRunId)
@@ -461,9 +516,9 @@ export class WorkspaceManager {
   async describe(id: string): Promise<WorkspaceManifest & { runId?: string; active: boolean }> {
     if (!validWorkspace(id))
       throw new ToolError('WORKSPACE_NOT_FOUND', `Invalid workspace ID '${id}'.`);
-    if (id === 'default')
+    if (id === this.mainSession)
       return {
-        ...(await this.context('default')),
+        ...(await this.context(this.mainSession)),
         runId: this.defaultService.options.runId,
         active: true,
       };
@@ -511,7 +566,7 @@ export class WorkspaceManager {
       updatedAt: new Date().toISOString(),
       createdAt: new Date().toISOString(),
     };
-    const dir = path.join(this.workspaceRoot, id);
+    const dir = this.workspaceDir(id);
     await mkdir(path.join(dir, 'assets'), { recursive: true });
     await mkdir(path.join(dir, 'scenes'), { recursive: true });
     await atomicJson(path.join(dir, 'workspace.json'), manifest);
@@ -524,11 +579,16 @@ export class WorkspaceManager {
     // Context is an explicit agent entry point; opening the workspace lets it report recovery
     // health as well as persisted metadata. Listing workspaces remains lazy and does not open runs.
     if (manifest.workspaceStatus === 'active') await this.getForBrowsing(id);
-    return this.toContext(manifest);
+    const context = await this.toContext(manifest);
+    if (this.projectMode && id === this.mainSession && this.options.getProjectInfo) {
+      const project = (await this.options.getProjectInfo()) as { goal: string };
+      context.goal = project.goal;
+    }
+    return context;
   }
 
   async archive(id: string): Promise<WorkspaceManifest & { active: false }> {
-    if (id === 'default' || !validWorkspace(id))
+    if (id === this.mainSession || !validWorkspace(id))
       throw new ToolError(
         'INVALID_WORKSPACE_LIFECYCLE',
         'The default workspace cannot be archived.',
@@ -540,7 +600,7 @@ export class WorkspaceManager {
         const persistArchive = async () => {
           const manifest = await this.readManifest(id);
           if (manifest.workspaceStatus === 'archived') return;
-          await atomicJson(path.join(this.workspaceRoot, id, 'workspace.json'), {
+          await atomicJson(path.join(this.workspaceDir(id), 'workspace.json'), {
             ...manifest,
             workspaceStatus: 'archived',
             metadataRevision: manifest.metadataRevision + 1,
@@ -559,7 +619,7 @@ export class WorkspaceManager {
   }
 
   async restore(id: string): Promise<WorkspaceManifest & { active: boolean }> {
-    if (id === 'default' || !validWorkspace(id))
+    if (id === this.mainSession || !validWorkspace(id))
       throw new ToolError(
         'INVALID_WORKSPACE_LIFECYCLE',
         'The default workspace cannot be restored.',
@@ -570,7 +630,7 @@ export class WorkspaceManager {
         await this.opening.get(id);
         const manifest = await this.readManifest(id);
         if (manifest.workspaceStatus !== 'active') {
-          await atomicJson(path.join(this.workspaceRoot, id, 'workspace.json'), {
+          await atomicJson(path.join(this.workspaceDir(id), 'workspace.json'), {
             ...manifest,
             workspaceStatus: 'active',
             metadataRevision: manifest.metadataRevision + 1,
@@ -585,7 +645,7 @@ export class WorkspaceManager {
   }
 
   async purge(id: string, confirmation: string): Promise<{ id: string; purged: true }> {
-    if (id === 'default' || !validWorkspace(id))
+    if (id === this.mainSession || !validWorkspace(id))
       throw new ToolError('INVALID_WORKSPACE_LIFECYCLE', 'The default workspace cannot be purged.');
     if (confirmation !== id)
       throw new ToolError(
@@ -601,8 +661,8 @@ export class WorkspaceManager {
           throw new ToolError('WORKSPACE_NOT_ARCHIVED', 'Archive the workspace before purging it.');
         const service = this.services.get(id);
         if (service) await service.serialize(async () => undefined);
-        const directory = path.resolve(this.workspaceRoot, id);
-        if (path.dirname(directory) !== this.workspaceRoot || path.basename(directory) !== id)
+        const directory = this.workspaceDir(id);
+        if (path.dirname(directory) !== this.workspaceRoot)
           throw new ToolError(
             'INVALID_WORKSPACE_LIFECYCLE',
             'Workspace path failed safety checks.',
@@ -648,6 +708,8 @@ export class WorkspaceManager {
   ): Promise<WorkspaceContext> {
     const previous = this.metadataQueues.get(id) ?? Promise.resolve();
     const task = previous.then(async () => {
+      if (this.projectMode && id === this.mainSession && patch.goal !== undefined)
+        throw new ToolError('PROJECT_GOAL_ONLY', 'Update the main goal with update_project_info.');
       const manifest = await this.readManifest(id);
       if (this.lifecycleTransitions.has(id))
         throw new ToolError(
@@ -665,7 +727,7 @@ export class WorkspaceManager {
         metadataRevision: manifest.metadataRevision + 1,
         updatedAt: new Date().toISOString(),
       };
-      const workspaceDir = path.join(this.workspaceRoot, id);
+      const workspaceDir = this.workspaceDir(id);
       await mkdir(workspaceDir, { recursive: true });
       await atomicJson(path.join(workspaceDir, 'workspace.json'), next);
       return this.toContext(next);
@@ -699,9 +761,9 @@ export class WorkspaceManager {
       throw new ToolError('WORKSPACE_NOT_FOUND', `Invalid workspace ID '${id}'.`);
     let raw: Record<string, unknown>;
     try {
-      raw = JSON.parse(await readFile(path.join(this.workspaceRoot, id, 'workspace.json'), 'utf8'));
+      raw = JSON.parse(await readFile(path.join(this.workspaceDir(id), 'workspace.json'), 'utf8'));
     } catch {
-      if (id === 'default') return defaultContext();
+      if (id === 'default' && !this.projectMode) return defaultContext();
       throw new ToolError('WORKSPACE_NOT_FOUND', `No workspace named '${id}'.`);
     }
     if (raw.id !== id || typeof raw.name !== 'string' || typeof raw.createdAt !== 'string')
@@ -798,9 +860,9 @@ export class WorkspaceManager {
     recentActivity.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
     checkpoints.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
     const saveDir =
-      id === 'default'
+      id === this.mainSession
         ? path.join(this.defaultRoot, 'scenes')
-        : path.join(this.workspaceRoot, id, 'scenes');
+        : path.join(this.workspaceDir(id), 'scenes');
     const availableSaves = (await readdir(saveDir).catch(() => []))
       .filter((file) => file.endsWith('.json'))
       .map((file) => file.slice(0, -5))
@@ -857,9 +919,9 @@ export class WorkspaceManager {
     workspaceId: string,
   ): Promise<Array<{ runId: string; modified: number }>> {
     const base =
-      workspaceId === 'default'
+      workspaceId === this.mainSession
         ? path.join(this.defaultRoot, 'runs')
-        : path.join(this.workspaceRoot, workspaceId, 'runs');
+        : path.join(this.workspaceDir(workspaceId), 'runs');
     const entries = await readdir(base, { withFileTypes: true }).catch(() => []);
     const runs = await Promise.all(
       entries
@@ -884,7 +946,7 @@ export class WorkspaceManager {
   async get(id: string): Promise<ToolService> {
     if (!validWorkspace(id))
       throw new ToolError('WORKSPACE_NOT_FOUND', `Invalid workspace ID '${id}'.`);
-    if (id === 'default') return this.defaultService;
+    if (id === this.mainSession) return this.defaultService;
     if (this.lifecycleTransitions.has(id))
       throw new ToolError(
         'WORKSPACE_LIFECYCLE_BUSY',
@@ -917,7 +979,7 @@ export class WorkspaceManager {
   async getForBrowsing(id: string): Promise<ToolService> {
     if (!validWorkspace(id))
       throw new ToolError('WORKSPACE_NOT_FOUND', `Invalid workspace ID '${id}'.`);
-    if (id === 'default') return this.defaultService;
+    if (id === this.mainSession) return this.defaultService;
     if (this.lifecycleTransitions.has(id))
       throw new ToolError(
         'WORKSPACE_LIFECYCLE_BUSY',
@@ -954,7 +1016,7 @@ export class WorkspaceManager {
 
   private async open(manifest: WorkspaceManifest): Promise<ToolService> {
     const id = manifest.id;
-    const dataDir = path.join(this.workspaceRoot, id);
+    const dataDir = this.workspaceDir(id);
     const artifactsDir = path.join(dataDir, 'runs');
     const runId = `workspace-${id.slice(0, 8)}-${Date.now()}-${randomUUID().slice(0, 8)}`;
     const service = new ToolService({
@@ -980,9 +1042,9 @@ export class WorkspaceManager {
     if (!/^[a-zA-Z0-9][\w-]{0,99}$/.test(runId))
       throw new ToolError('RUN_NOT_FOUND', 'Invalid run ID.');
     const base =
-      workspaceId === 'default'
+      workspaceId === this.mainSession
         ? path.join(this.defaultRoot, 'runs')
-        : path.join(this.workspaceRoot, workspaceId, 'runs');
+        : path.join(this.workspaceDir(workspaceId), 'runs');
     const candidate = path.resolve(base, runId);
     if (path.dirname(candidate) !== base) throw new ToolError('RUN_NOT_FOUND', 'Invalid run ID.');
     if (!(await stat(candidate).catch(() => null))?.isDirectory())

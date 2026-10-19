@@ -666,7 +666,9 @@ test('orthographic and perspective cameras render the same house and preserve fr
   const canvasBox = await canvas.boundingBox();
   expect(canvasBox).not.toBeNull();
   await canvas.click({ position: { x: canvasBox!.width / 2, y: canvasBox!.height * 0.7 } });
-  await expect(page.getByLabel('Name', { exact: true })).toHaveValue(/Perspective/);
+  await expect(page.locator('.properties').getByLabel('Name', { exact: true })).toHaveValue(
+    /Perspective/,
+  );
   const beforeOrbit = ((await (await request.get('/api/state')).json()) as Scene).camera;
   await page.mouse.move(canvasBox!.x + canvasBox!.width / 2, canvasBox!.y + canvasBox!.height / 2);
   await page.mouse.down();

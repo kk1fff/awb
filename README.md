@@ -1,22 +1,58 @@
 # Fieldwork · Agent World Builder
 
-A local 3D workspace for an external AI agent to create, render, inspect, and revise scenes. Humans see the same scene, inspect objects, compare immutable checkpoints, and record feedback.
+A local 3D scene builder. A human starts one project; Codex, Claude Code, or OpenCode builds and inspects scenes through the same public API used by the browser.
 
-## Start with an agent
+## Start a project
 
-After cloning, launch one of the supported agents from the project folder and give it a task:
+Requires Linux, Node.js 22.12+, npm, a browser, and an installed, signed-in agent CLI. From this repository:
 
 ```bash
-codex
-# or: claude
-# or: opencode
+./start.sh --workdir ~/project1
 ```
 
-On first connection, the project's MCP bootstrap installs npm dependencies and Playwright Chromium if needed, starts the local app, and opens **http://127.0.0.1:5173**. The browser shows the scene and the agent's actions live. Requires Node.js 22.12+, npm, and the selected agent CLI already installed and signed in. If Chromium reports missing Linux libraries, install them with `npx playwright install --with-deps chromium`.
+The launcher installs dependencies when missing, builds the app, starts one local server on an available port, and shows its browser URL in a one-row terminal header. The remaining terminal is an interactive shell in `~/project1`; it uses a PTY and does not start tmux. Open the URL to watch the agent and scene. Launch `codex`, `claude`, or `opencode` in the shell. Exiting an agent returns to the shell; exiting the shell stops the server.
 
-The agent chooses between two modes from your request: build or edit a scene through the public tools, or improve the application/interface when you ask for that. It asks a brief clarification if the requested mode or outcome is unclear. Project-specific MCP setup is checked in for Codex, Claude Code, and OpenCode.
+For server-only use, including non-interactive launch:
 
-To run the app without an agent, install dependencies and start the development servers directly:
+```bash
+./start.sh --workdir ~/project1 --no-ui
+```
+
+This prints the URL and runs until Ctrl-C or SIGTERM. It prepares the same project-specific MCP configuration. No browser opens automatically. When a coding agent receives the human's goal, it should call `get_project_info`, then `update_project_info` if the goal is empty.
+
+## Workdir layout
+
+```text
+project1/
+  info.yaml                   # Fieldwork marker, project ID, goal, main_session, agent_context
+  session-<main-uuid>/        # Main scene, saves, assets, runs, and recovery
+  session-<sub-uuid>/         # A separate submodule scene and evidence
+  .fieldwork/                 # Current connection, launch lock, helper commands, server log
+  .mcp.json                  # Claude Code MCP entry
+  .codex/config.toml         # Codex MCP entry for trusted projects
+  opencode.json              # OpenCode MCP entry
+```
+
+`start.sh` creates a missing workdir with an empty goal and main session. An existing directory must already contain a valid Fieldwork `info.yaml` and main session folder; unrelated directories are rejected. Startup refreshes the Fieldwork MCP entry while preserving other agent settings. The generated `codex` command in the launcher's shell supplies the same connection through CLI overrides, including in non-Git workdirs where Codex may not load project configuration. Each MCP connection verifies the current project and server run before exposing tools. Client trust and MCP approval prompts may still appear.
+
+`info.yaml` is human-readable project metadata. While the server runs, agents update `goal` and `agent_context` through `get_project_info` and `update_project_info`, using `info_revision` to prevent stale writes. Edit the file directly only while the server is stopped. The main session's goal follows the project goal; submodule sessions have their own goals.
+
+Create and enter a submodule session from the provided shell:
+
+```bash
+fieldwork session create --name "Pond" --goal "Design a pond"
+fieldwork session shell <session-uuid>
+```
+
+The second command opens a shell inside that session folder with its own MCP binding. Its scene is isolated from the main scene. Use the browser or public export/import tools to hand finished submodule work to the main session. Fieldwork does not spawn or coordinate coding agents.
+
+Existing `data/workspaces` scenes in this repository are left untouched and are not imported into new workdirs automatically.
+
+## Tools and development
+
+The [tool guide](docs/tools.md) and [agent workflow](docs/agent-workflow.md) describe scene operations. Scene tools return stable object IDs and scene revisions. Every tool call is recorded with an execution ID; renders, exports, and saves are associated with the producing run and revision. The server owns scene state. Agents must build scenes through public tools rather than editing saved JSON or renderer source.
+
+The direct development server remains available for application work:
 
 ```bash
 npm ci
@@ -24,80 +60,6 @@ npx playwright install chromium
 npm run dev
 ```
 
-Open **http://127.0.0.1:5173**. The tool API listens at **http://127.0.0.1:3001**.
+The API uses port 3001 and Vite uses port 5173 in this mode. It retains the legacy `data/workspaces` layout for compatibility. The human-started `start.sh` path uses one production-style local server and workdir storage.
 
-Production-style local launch:
-
-```bash
-npm run build
-npm start
-```
-
-Then open http://127.0.0.1:3001. No model credentials are needed. The application binds to localhost and has no authentication; it is intended for local use.
-
-## Agent tools
-
-The `fieldwork` MCP server exposes the same validated tools as the HTTP API. The tool contract and workflow are documented in [the tool guide](docs/tools.md) and [agent workflow](docs/agent-workflow.md). Scene-building agents must use public tools rather than editing scene JSON or renderer source. Create a logical workspace with `POST /api/workspaces`, open it in the UI with `/?workspace=<uuid>`, or set `SCENE_WORKSPACE_ID=<uuid>` for an MCP/CLI client. Workspaces isolate scene state, local assets, saves, events, checkpoints, and runs; `promote_asset` explicitly copies a local asset or verified scene export into another workspace.
-
-```bash
-npm run --silent tool -- create_object '{"name":"tree_trunk","type":"cylinder","position":[2,1,0],"dimensions":[0.3,2,0.3],"color":"#795548"}'
-npm run --silent tool -- list_objects '{}'
-npm run --silent tool -- render_scene '{"label":"First observation"}'
-```
-
-`render_scene` returns a PNG checkpoint for inspection. `export_scene` writes a `.glb` containing visible scene meshes and materials and returns its artifact URL, file name, and revision. The browser's **Export GLB** action downloads the same artifact. HTTP remains the authoritative interface; the CLI is a thin wrapper. Set `SCENE_API` to change its base URL.
-
-For a repeatable starting construction on a **fresh scene**:
-
-```bash
-npm run demo:garden
-```
-
-This helper makes public tool calls and captures a first image. It does **not** inspect the image, make a visual correction, or prove the autonomous feedback loop. Those steps belong to the external vision-capable agent.
-
-## Human workspace
-
-- Select objects in the explorer or viewport and apply property edits through the public API.
-- Orbit, pan, and zoom locally. **Use current view** commits the camera for future renders.
-- Capture checkpoints; compare Before/After views and open each preserved scene JSON.
-- Review a checkpoint using **Reviews & feedback**. Approval is a human signal, independent of automated tests.
-- Save or load a named scene using the footer. A new server run starts empty; explicitly load a save to continue it.
-
-## Storage and configuration
-
-Named saves: `data/scenes/<name>.json`. Run evidence: `artifacts/runs/<run-id>/`, containing `events.jsonl`, checkpoint scene/PNG/metadata directories, `reviews.jsonl`, generated `review.md` and `tool-feedback.md`, and the last explicitly saved `scene.json`. Each save also gets an immutable provenance record.
-
-Generated output is ignored by Git. Keep artifacts to revisit a run; the live API/UI expose the current run. Older runs remain available on disk. Reusing an existing `RUN_ID` is rejected to protect evidence.
-
-| Variable             | Default                                  | Purpose                                                              |
-| -------------------- | ---------------------------------------- | -------------------------------------------------------------------- |
-| `PORT`               | `3001`                                   | API / production UI port                                             |
-| `VITE_PORT`          | `5173`                                   | Development UI port                                                  |
-| `CLIENT_URL`         | Development UI, or production API origin | URL reachable by screenshot browser                                  |
-| `DATA_DIR`           | `data`                                   | Named saves and optional local asset catalog (`assets/catalog.json`) |
-| `ARTIFACTS_DIR`      | `artifacts/runs`                         | Run directory parent                                                 |
-| `RUN_ID`             | Timestamp + random suffix                | New run identifier                                                   |
-| `SCENE_API`          | `http://127.0.0.1:3001`                  | CLI / MCP API base                                                   |
-| `SCENE_WORKSPACE_ID` | Required UUID for MCP / scene CLI        | Binds one MCP or scene CLI process to an isolated workspace          |
-
-Create a workspace with `npm run workspace -- create --name "House designer" --goal "Build a photorealistic PNW house"`. The command uses a running `SCENE_API` when available or writes directly to local `DATA_DIR` when the app is stopped. Set the returned UUID as `SCENE_WORKSPACE_ID` for that MCP or scene CLI process. Use `npm run workspace -- list` to inspect workspace metadata. The legacy default remains available through the browser and HTTP `/api/*` routes.
-
-For a custom development API port, update the Vite proxy environment as described in the tool guide.
-
-## Verify
-
-```bash
-npm run typecheck
-npm test
-npm run test:api
-npm run test:smoke
-npm run test:e2e
-```
-
-Browser tests build and launch a disposable production server on port 4173, with isolated temporary storage. Screenshots are written to `artifacts/tests/`; failure traces go to `test-results/`. Browser tests verify behavior, not aesthetic quality. A complete MVP review also requires actual PNG inspection, an evidence-based correction, and a fresh-process reload.
-
-See [the MVP verification report](docs/mvp-validation.md) for the checks actually run, visual findings, and local demonstration artifacts.
-
-## Limits
-
-One local user with path-scoped logical workspaces (not an authentication or OS security boundary), five opaque primitives, orthographic and perspective cameras (orthographic by default), flat object hierarchy, and ambient/directional lighting. No grouping, undo, animation, or imported mesh editing. Commands serialize within each workspace; separate workspace queues run independently. Screenshot capture briefly queues tools in its own workspace while read routes remain available. JSON saves and JSONL history are local files, not a transactional database. The MCP bootstrap starts the local app only; it does not install or authenticate the agent CLI.
+Run checks with `npm run typecheck`, `npm test`, `npm run test:api`, `npm run test:smoke`, and `npm run test:e2e`. Browser tests use disposable storage. A complete visual evaluation also requires opening the actual PNG, making a justified correction, and verifying a fresh-process reload.

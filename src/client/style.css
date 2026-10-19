@@ -1394,3 +1394,14 @@ h1 > span {
     width: 85px;
   }
 }
+.project-goal {
+  display: flex;
+  gap: 0.75rem;
+  align-items: baseline;
+  padding: 0.8rem 1rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.project-goal strong {
+  white-space: nowrap;
+}

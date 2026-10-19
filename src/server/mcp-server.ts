@@ -2,9 +2,12 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { toolSchemas, type ToolName } from '../shared/schema.js';
 
 export const fieldworkInstructions =
-  'Build scenes through Fieldwork public tools and UI. Before scene work, read docs/designer-agent-bootstrap.md (also available at GET /api/instructions). Each MCP process is bound to one UUID workspace through SCENE_WORKSPACE_ID; create/configure a workspace with the setup CLI before connecting. Delegate specialists through your host agent runtime, not through this app; give each specialist a separate workspace. Read workspace goal, acceptance criteria, constraints, task and status with get_workspace_context; update task progress with update_workspace_context. Promote assets or scene exports explicitly and preserve source lineage. Render, open and inspect the actual PNG, make evidence-based corrections, save, reload, and verify the scene. Never download assets. Escalate reproducible app limitations with calls and evidence. Pause designer scene work during shared engineer source changes, then rerun from a fresh scene. For the PNW house, retain the photographic acceptance bar and state any shortfall.';
+  'Fieldwork was started by a human for one project. This MCP process is bound to one UUID session through SCENE_WORKSPACE_ID and the run-specific project connection. First call get_project_info and get_workspace_context. If the project goal is empty and the human has supplied one, call update_project_info with the current info_revision to record it in info.yaml. Build scenes through public tools only; update session task progress with update_workspace_context. Submodule sessions have separate scenes; combine them in the main session through explicit exports/imports. Render and inspect the actual PNG, make evidence-based corrections, save, reload, and verify the scene from a fresh scene when testing a fix. Never download assets. Escalate reproducible app limitations with calls and evidence. Read docs/designer-agent-bootstrap.md or GET /api/instructions for the complete workflow.';
 
 const descriptions: Record<ToolName, string> = {
+  get_project_info: 'Read the project goal, main session ID, and agent context.',
+  update_project_info:
+    'Set the project goal or agent context after reading its current info revision.',
   get_workspace_context:
     'Read this workspace’s goal, acceptance criteria, constraints, and work status.',
   update_workspace_context:

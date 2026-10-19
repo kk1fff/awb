@@ -54,6 +54,9 @@ export function App() {
   };
   const [workspaces, setWorkspaces] = useState<WorkspaceSummary[]>([]);
   const [workspaceContext, setWorkspaceContext] = useState<Record<string, any>>();
+  const [projectInfo, setProjectInfo] = useState<{ goal: string; main_session: string } | null>(
+    null,
+  );
   const [workspaceFilter, setWorkspaceFilter] = useState<'all' | 'active' | 'archived'>('all');
   const [bundleName, setBundleName] = useState('specialist-submodel');
   const [bundleMessage, setBundleMessage] = useState('');
@@ -111,6 +114,15 @@ export function App() {
   };
   useEffect(() => {
     mounted.current = true;
+    const refreshProject = () => {
+      void get<{ project: { goal: string; main_session: string } | null }>('/api/project')
+        .then((value) => {
+          if (mounted.current) setProjectInfo(value.project);
+        })
+        .catch(() => undefined);
+    };
+    refreshProject();
+    const projectTimer = setInterval(refreshProject, 2000);
     void get<{ workspaces: WorkspaceSummary[] }>('/api/workspaces')
       .then((value) => setWorkspaces(value.workspaces))
       .catch(() => undefined);
@@ -157,6 +169,7 @@ export function App() {
     };
     return () => {
       mounted.current = false;
+      clearInterval(projectTimer);
       stream.close();
     };
   }, [apiBase, workspaceContextUrl]);
@@ -335,6 +348,12 @@ export function App() {
         </div>
       </header>
       <section className="workspace-dashboard panel" aria-label="Workspace dashboard">
+        {projectInfo && (
+          <div className="project-goal" data-testid="project-goal">
+            <strong>Project goal</strong>
+            <span>{projectInfo.goal || 'Awaiting a goal from the human.'}</span>
+          </div>
+        )}
         <div className="panel-title">
           <div>
             <h2>Workspace brief</h2>

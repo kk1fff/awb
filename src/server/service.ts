@@ -51,6 +51,12 @@ export interface ServiceOptions {
   promoteAsset?: (args: Record<string, unknown>) => Promise<unknown>;
   getWorkspaceContext?: () => Promise<unknown>;
   updateWorkspaceContext?: (patch: Record<string, unknown>) => Promise<unknown>;
+  getProjectInfo?: () => Promise<unknown>;
+  updateProjectInfo?: (patch: {
+    expectedRevision: number;
+    goal?: string;
+    agentContext?: Record<string, unknown>;
+  }) => Promise<unknown>;
   assertWorkspaceWritable?: () => Promise<void>;
 }
 export async function atomicJson(file: string, value: unknown): Promise<void> {
@@ -581,6 +587,18 @@ export class ToolService {
     executionId: string,
     timestamp: string,
   ): Promise<unknown> {
+    if (tool === 'get_project_info') {
+      if (!this.options.getProjectInfo)
+        throw new ToolError('PROJECT_UNAVAILABLE', 'Project info is unavailable.');
+      return this.options.getProjectInfo();
+    }
+    if (tool === 'update_project_info') {
+      if (!this.options.updateProjectInfo)
+        throw new ToolError('PROJECT_UNAVAILABLE', 'Project info cannot be updated.');
+      return this.options.updateProjectInfo(
+        args as { expectedRevision: number; goal?: string; agentContext?: Record<string, unknown> },
+      );
+    }
     if (tool === 'promote_asset') {
       if (!this.options.promoteAsset)
         throw new ToolError(

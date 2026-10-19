@@ -5,13 +5,13 @@ Use this guide when asked to build or improve a scene with Fieldwork. The host a
 ## Before scene work
 
 1. Identify the task mode. Build or edit a scene through public tools and the UI. Change application source only when the user asks for a product, interface, or workflow change.
-2. Read the current scene and workspace before changing anything. Each MCP or scene CLI process is bound to one UUID workspace by `SCENE_WORKSPACE_ID`; it is required and cannot be changed per tool call. Create a workspace with `npm run workspace -- create --name "..." --goal "..."` (or `POST /api/workspaces`) and configure the returned UUID before connecting. Make `get_workspace_context` the first tool call; verify its `id` matches the assignment and read its goal, criteria, constraints, task, status and summary before editing. Tool responses/events are bound to that workspace; verify the ID and brief again after a process restart or reconnect. The browser uses `/?workspace=<uuid>`. The legacy default remains available through HTTP `/api/*` and the web UI, not MCP or scene CLI.
-3. If the work needs specialists, delegate through the host runtime (Codex/Claude/OpenCode agent features). Fieldwork does not spawn agents. Create one workspace per specialist with the workspace dashboard, setup CLI, or `POST /api/workspaces`; include goal, acceptance criteria, constraints, and owner, then provide the specialist its UUID and task. Workspaces isolate app state logically; they are not OS or security boundaries.
+2. Call `get_project_info` and `get_workspace_context` before changing the scene. If the project goal is empty, record the human's goal with `update_project_info`. Check that the workspace ID matches the session folder or assignment. Each agent shell receives a project and session binding from the launcher; the MCP connection verifies the current server run. The browser uses `/?workspace=<uuid>` to inspect a specific session.
+3. If the work needs specialists, delegate through the host runtime (Codex/Claude/OpenCode agent features). Fieldwork does not spawn agents. Create one session per specialist with `fieldwork session create --name "..." --goal "..."`, then use `fieldwork session shell <uuid>` to open a shell in its folder with the matching MCP binding. Sessions isolate app state logically; they are not OS or security boundaries.
 4. Keep designer scene work paused while an engineer is changing shared application source. Resume after review/commit and rerun the scene from a fresh scene using the accepted goal and criteria.
 
 ## Build with public tools
 
-Use the Fieldwork public scene tools (`get_workspace_context`, `update_workspace_context`, `create_object`, `update_object`, `delete_object`, `list_objects`, `inspect_object`, `search_assets`, `set_camera`, `set_lighting`, `render_scene`, `export_scene`, `save_scene`, `load_scene`, and `record_review`) or the browser UI. Both submit edits through the same server-owned scene API. Context updates change `metadataRevision`, not `sceneRevision`. Do not edit scene JSON or renderer source to work around a scene-building limitation.
+Use the Fieldwork public scene tools (`get_project_info`, `update_project_info`, `get_workspace_context`, `update_workspace_context`, `create_object`, `update_object`, `delete_object`, `list_objects`, `inspect_object`, `search_assets`, `set_camera`, `set_lighting`, `render_scene`, `export_scene`, `save_scene`, `load_scene`, and `record_review`) or the browser UI. Both submit edits through the same server-owned scene API. Project and context updates do not increment `sceneRevision`. Do not edit scene JSON or renderer source to work around a scene-building limitation.
 
 For each requested scene:
 
@@ -30,7 +30,7 @@ For a portable handoff, call `export_scene_bundle` or use **Export handoff ZIP**
 ## Asset and feedback rules
 
 - Do not download models, textures, HDRs, or other artifacts from the internet. Use locally authored geometry/materials/textures or assets the user supplied.
-- Use the workspace dashboard to browse active and archived workspaces, review persisted briefs and activity, and archive/restore. Purge is permanent, requires typing the exact UUID, and is available from another workspace's list; `default` is protected. Archived workspaces are read-only until restored.
+- Use the workspace dashboard to browse active and archived sessions, review persisted briefs and activity, and archive/restore. Purge is permanent, requires typing the exact UUID, and is available from another session's list; the main session is protected. Archived sessions are read-only until restored.
 - Keep the designer paused while shared source files are being changed by an engineer. Resume only after the reviewed implementation is committed; rerun from a fresh scene and inspect its PNG.
 - Retry recoverable authoring mistakes through existing tools. If a valid public operation fails reproducibly, produces wrong state/rendering, or requires a fragile workaround, record the exact workspace/run, call and arguments, response/error, relevant screenshot, impact, and proposed interface change in `feedback.md` using `record_review` where appropriate. Tell the engineer; do not disguise an app limitation as an asset-quality issue.
 - Distinguish tool quality from scene quality. A scene that exports successfully can still miss the requested visual goal.
@@ -41,7 +41,7 @@ For the PNW house task, judge the actual rendered image against photographic pla
 
 ## API and workspace references
 
-- `GET /api/tools` lists public tool schemas. `POST /api/tools` calls the default workspace; `POST /api/workspaces/<uuid>/tools` calls a specialist workspace.
+- `GET /api/tools` lists public tool schemas. `POST /api/tools` calls the main session; `POST /api/workspaces/<uuid>/tools` calls a specialist session.
 - `GET /api/instructions` returns this bootstrap as Markdown for API-only agents.
 - `docs/agent-workflow.md` and `docs/tools.md` describe the broader app workflow and tool contracts.
 - Every accepted scene-changing command is committed with a recovery snapshot. After restart, the workspace opens a new run with the exact last committed scene revision and object IDs restored. The new run's `run.json` records whether recovery occurred and, if so, the source execution ID, run ID, and revision. Named saves and prior run evidence persist too.
