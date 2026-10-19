@@ -91,7 +91,7 @@ describe('UUID-bound MCP workspace', () => {
     if (previousWorkspaceId === undefined) delete process.env.SCENE_WORKSPACE_ID;
     else process.env.SCENE_WORKSPACE_ID = previousWorkspaceId;
     expect(() => createFieldworkMcpServer({ workspaceId: 'default' })).toThrow(/UUID/);
-    expect(fieldworkInstructions).toContain('SCENE_WORKSPACE_ID');
+    expect(fieldworkInstructions).toContain('current project, session, and server run');
     expect(fieldworkInstructions).toContain('get_workspace_context');
 
     await startApp();

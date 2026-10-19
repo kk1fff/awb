@@ -435,6 +435,7 @@ describe('public tool API', () => {
       'reserve_designer_slot',
       'Promote explicitly',
       'photographic plausibility',
+      'curl "$SCENE_API/api/instructions"',
     ])
       expect(guide.toString()).toContain(phrase);
 
@@ -452,8 +453,8 @@ describe('public tool API', () => {
       await mcpServer.connect(serverTransport);
       await client.connect(clientTransport);
       expect(client.getInstructions()).toBe(fieldworkInstructions);
-      expect(client.getInstructions()).toContain('docs/designer-agent-bootstrap.md');
-      expect(client.getInstructions()).toContain('SCENE_WORKSPACE_ID');
+      expect(client.getInstructions()).toContain('GET ${SCENE_API}/api/instructions');
+      expect(client.getInstructions()).toContain('not in the project workdir');
       expect(client.getInstructions()).toContain('fresh scene');
     } finally {
       await client.close();

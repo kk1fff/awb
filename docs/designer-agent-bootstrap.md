@@ -2,6 +2,8 @@
 
 Use this guide when asked to build or improve a scene with Fieldwork. The host agent runtime owns agent delegation; Fieldwork provides scene workspaces and public tools, but does not spawn or schedule agents.
 
+Fieldwork launches agents in a separate project workdir. This file lives in the Fieldwork application checkout, not in that workdir. From the launcher shell, read the served copy with `curl "$SCENE_API/api/instructions"`; `SCENE_API` points to the current local server. The MCP connection also provides a short startup summary. The human's request supplies the task; a new project's `info.yaml` starts with an empty goal.
+
 ## Before scene work
 
 1. Identify the task mode. Build or edit a scene through public tools and the UI. Change application source only when the user asks for a product, interface, or workflow change.
@@ -42,7 +44,6 @@ For the PNW house task, judge the actual rendered image against photographic pla
 ## API and workspace references
 
 - `GET /api/tools` lists public tool schemas. `POST /api/tools` calls the main session; `POST /api/workspaces/<uuid>/tools` calls a specialist session.
-- `GET /api/instructions` returns this bootstrap as Markdown for API-only agents.
-- `docs/agent-workflow.md` and `docs/tools.md` describe the broader app workflow and tool contracts.
+- `GET $SCENE_API/api/instructions` returns this bootstrap as Markdown. In the application checkout, `docs/agent-workflow.md` and `docs/tools.md` describe the broader workflow and tool contracts; these files are not copied into the project workdir.
 - Every accepted scene-changing command is committed with a recovery snapshot. After restart, the workspace opens a new run with the exact last committed scene revision and object IDs restored. The new run's `run.json` records whether recovery occurred and, if so, the source execution ID, run ID, and revision. Named saves and prior run evidence persist too.
 - If recovery metadata or the current snapshot is corrupt or missing, the app still starts and exposes `recoveryError` in health and workspace context. Scene mutations, saves, renders, and exports then return `RECOVERY_UNAVAILABLE` until the recovery issue is repaired; do not proceed as if an empty scene were recovered.
