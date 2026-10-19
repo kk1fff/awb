@@ -1,5 +1,13 @@
 # Development feedback
 
+## Large GLB export used excess browser memory
+
+- Run: `export-memory-20261019T2323Z`; prior failed export execution `575de23b-7ca6-4a2f-8187-3f6577c3d7fd`.
+- Evidence: Chromium was killed near 2.8 GiB RSS in the earlier house export. The old path mounted the full viewport and transferred the complete 127 MB GLB as one base64 result.
+- Impact: a valid large scene could fail to export under host memory pressure.
+- Improvement: use an export-only page, sequential asset loading, chunked transfer to a temporary file, one browser export at a time, and explicit `EXPORT_FAILED` cleanup.
+- Verification: six repeated exports of the same saved house succeeded, including three inside a 3 GiB memory-limited scope. Each produced a valid 127,555,884-byte GLB with 27,231 nodes at the same revision. See the run review for the measurement limits.
+
 ## Lead designers need a navigable instruction map
 
 - Run: `instruction-guides-20261019T192344Z`, initial OpenCode car and room probes.

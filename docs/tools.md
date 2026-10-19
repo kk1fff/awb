@@ -95,6 +95,8 @@ On success, result fields include `id`, `label`, `executionId`, `sceneRevision`,
 
 `export_scene` writes a binary glTF 2.0 (`.glb`) file under the current run's `exports/` directory. It exports visible scene meshes, transforms, and material colors from the current scene revision. The result includes `format`, `fileName`, `artifactUrl`, `sceneRevision`, `objectCount`, and `bytes`. Exports are immutable run artifacts; the browser's **Export GLB** button triggers the same public tool and downloads its file.
 
+Browser-backed exports use an export-only page, a four-minute execution limit, and bounded file transfer. A browser crash, timeout, transfer failure, or invalid GLB returns `EXPORT_FAILED` with an error message. Failed exports remove partial output when possible and report cleanup failure if removal fails. Exports do not change scene revision.
+
 ## Evaluations and tool feedback
 
 `record_review` requires `kind`, `author` (`agent` or `human`), and `text`.

@@ -142,7 +142,9 @@ export function createFieldworkMcpServer(options: { api?: string; workspaceId?: 
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'X-Fieldwork-Designer': '1' },
             body: JSON.stringify({ tool: name, arguments: toolArguments }),
-            signal: AbortSignal.timeout(120_000),
+            signal: AbortSignal.timeout(
+              name === 'export_scene' || name === 'export_scene_bundle' ? 300_000 : 120_000,
+            ),
           });
           const result = await response.json();
           const success = Boolean((result as { success?: boolean }).success);

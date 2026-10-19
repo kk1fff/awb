@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import type { Server } from 'node:http';
+import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
@@ -777,6 +777,31 @@ describe('public tool API', () => {
       expect.closeTo(0.3185, 3),
       1,
     ]);
+  });
+  it('removes a partial browser export after failure without changing the scene', async () => {
+    const lighting = await call('set_lighting', { environmentAssetId: 'builtin:pnw-overcast' });
+    expect(lighting.success).toBe(true);
+    const fixture = createServer((_request, response) => {
+      response.setHeader('Content-Type', 'text/html');
+      response.end(
+        '<script>window.__fieldworkExport=async()=>{' +
+          'await window.__fieldworkWriteExportChunk("cGFydGlhbA==");' +
+          'throw new Error("synthetic export failure")}</script>',
+      );
+    });
+    await new Promise<void>((resolve) => fixture.listen(0, '127.0.0.1', resolve));
+    try {
+      service.options.clientUrl = `http://127.0.0.1:${(fixture.address() as AddressInfo).port}`;
+      const failed = await call('export_scene');
+      expect(failed.success).toBe(false);
+      expect(failed.error?.code).toBe('EXPORT_FAILED');
+      expect(failed.error?.message).toContain('synthetic export failure');
+      expect(failed.sceneRevision).toBe(lighting.sceneRevision);
+      expect(await readdir(path.join(service.runDir, 'exports'))).toEqual([]);
+      expect((await get<Scene>('/api/state')).revision).toBe(lighting.sceneRevision);
+    } finally {
+      await new Promise<void>((resolve) => fixture.close(() => resolve()));
+    }
   });
   it('streams an initial snapshot, running tool action, and completion update', async () => {
     const response = await fetch(`${base}/api/stream`);

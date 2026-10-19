@@ -37,6 +37,18 @@ test('@smoke renders a public-API object in Linux Chromium with no browser error
   expect(errors).toEqual([]);
 });
 
+test('export-only browser page does not mount or fetch the viewport scene', async ({ page }) => {
+  const stateRequests: string[] = [];
+  page.on('request', (request) => {
+    if (request.url().includes('/api/state')) stateRequests.push(request.url());
+  });
+  await page.goto('/?fieldworkExport=1');
+  await expect.poll(() => page.evaluate(() => typeof window.__fieldworkExport)).toBe('function');
+  expect(await page.locator('canvas').count()).toBe(0);
+  expect(await page.getByRole('heading', { name: 'A world in the making.' }).count()).toBe(0);
+  expect(stateRequests).toEqual([]);
+});
+
 test('@smoke scopes the browser viewport and public tools to a selected workspace', async ({
   page,
   request,
@@ -815,13 +827,16 @@ test('agent can search, build, inspect, correct, save and export a PNW Craftsman
   expect(state.objects.some((object) => object.name === 'West divided-light window')).toBe(true);
   expect(state.lighting.environmentAssetId).toBe('builtin:pnw-overcast');
 
-  const exported = (await tool(request, 'export_scene')).result as {
+  const exportResponse = await tool(request, 'export_scene');
+  expect(exportResponse.sceneRevision).toBe(state.revision);
+  const exported = exportResponse.result as {
     artifactUrl: string;
     objectCount: number;
   };
   expect(exported.objectCount).toBe(state.objects.filter((object) => object.visible).length);
   const glb = Buffer.from(await (await request.get(exported.artifactUrl)).body());
   expect(glb.subarray(0, 4).toString()).toBe('glTF');
+  expect(glb.readUInt32LE(8)).toBe(glb.length);
   const jsonLength = glb.readUInt32LE(12);
   const gltf = JSON.parse(
     glb

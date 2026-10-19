@@ -39,9 +39,13 @@ function CheckpointView({ id, workspaceId }: { id: string; workspaceId: string }
     </main>
   );
 }
-const checkpoint = new URLSearchParams(location.search).get('checkpoint');
+const params = new URLSearchParams(location.search);
+const checkpoint = params.get('checkpoint');
 const workspaceId = workspaceIdFromUrl();
-window.__fieldworkExport = (scene) => exportBrowserScene(scene, workspaceId);
-createRoot(document.getElementById('root')!).render(
-  checkpoint ? <CheckpointView id={checkpoint} workspaceId={workspaceId} /> : <App />,
-);
+if (params.get('fieldworkExport') === '1') {
+  window.__fieldworkExport = (scene) => exportBrowserScene(scene, workspaceId);
+} else {
+  createRoot(document.getElementById('root')!).render(
+    checkpoint ? <CheckpointView id={checkpoint} workspaceId={workspaceId} /> : <App />,
+  );
+}

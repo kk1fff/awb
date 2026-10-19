@@ -45,7 +45,11 @@ async function loadSurfaceMaterial(
     map,
   });
 }
-export async function buildWorld(state: Scene, workspaceId?: string) {
+export async function buildWorld(
+  state: Scene,
+  workspaceId?: string,
+  options: { sequential?: boolean } = {},
+) {
   const apiBase = workspaceApiBase(workspaceId);
   const world = new THREE.Scene();
   world.background = new THREE.Color('#e9ede5');
@@ -71,67 +75,66 @@ export async function buildWorld(state: Scene, workspaceId?: string) {
       ? environment
       : new THREE.Color(state.lighting.backgroundColor ?? fallbackBackground);
   const gltfLoader = new GLTFLoader();
-  const items = await Promise.all(
-    state.objects.map(async (object) => {
-      let root: THREE.Object3D;
-      if (object.type === 'asset') {
-        if (!object.assetId) throw new Error(`Object ${object.name} has no assetId.`);
-        if (builtinAssetMap.get(object.assetId)?.kind === 'model')
-          root = buildBuiltinModel(object.assetId);
-        else if (object.assetId.startsWith('local:'))
-          root = (
-            await gltfLoader.loadAsync(
-              `${apiBase}/assets/${encodeURIComponent(object.assetId)}/file`,
-            )
-          ).scene;
-        else throw new Error(`Unknown model asset ${object.assetId}.`);
-      } else {
-        const material = object.materialId
-          ? await loadSurfaceMaterial(object.materialId, apiBase)
-          : new THREE.MeshStandardMaterial({
-              color: object.color,
-              roughness: object.roughness ?? 0.86,
-              metalness: object.metalness ?? 0,
-            });
-        root = new THREE.Mesh(geometry(object.type), material);
-      }
-      root.name = object.name;
-      root.position.fromArray(object.position);
-      root.rotation.set(...object.rotation);
-      const assetScale =
-        object.type === 'asset' && object.assetBounds
-          ? object.dimensions.map((value, i) => (value / object.assetBounds![i]) * object.scale[i])
-          : object.dimensions.map((value, i) => value * object.scale[i]);
-      root.scale.set(...(assetScale as [number, number, number]));
-      root.visible = object.visible;
-      const overrideMaterial =
-        object.type === 'asset' && object.materialId
-          ? await loadSurfaceMaterial(object.materialId, apiBase)
-          : undefined;
-      root.traverse((child) => {
-        if (!(child instanceof THREE.Mesh)) return;
-        child.userData.id = object.id;
-        child.name ||= object.name;
-        child.castShadow = object.type !== 'plane';
-        child.receiveShadow = true;
-        if (object.type === 'asset') {
-          const materials = Array.isArray(child.material) ? child.material : [child.material];
-          const clones = materials.map((original) => {
-            const material = overrideMaterial ? overrideMaterial.clone() : original.clone();
-            if (!object.materialId && material instanceof THREE.MeshStandardMaterial) {
-              if (object.roughness !== undefined) material.roughness = object.roughness;
-              if (object.metalness !== undefined) material.metalness = object.metalness;
-              if (object.color !== '#ffffff')
-                material.color.multiply(new THREE.Color(object.color));
-            }
-            return material;
+  const createItem = async (object: SceneObject) => {
+    let root: THREE.Object3D;
+    if (object.type === 'asset') {
+      if (!object.assetId) throw new Error(`Object ${object.name} has no assetId.`);
+      if (builtinAssetMap.get(object.assetId)?.kind === 'model')
+        root = buildBuiltinModel(object.assetId);
+      else if (object.assetId.startsWith('local:'))
+        root = (
+          await gltfLoader.loadAsync(`${apiBase}/assets/${encodeURIComponent(object.assetId)}/file`)
+        ).scene;
+      else throw new Error(`Unknown model asset ${object.assetId}.`);
+    } else {
+      const material = object.materialId
+        ? await loadSurfaceMaterial(object.materialId, apiBase)
+        : new THREE.MeshStandardMaterial({
+            color: object.color,
+            roughness: object.roughness ?? 0.86,
+            metalness: object.metalness ?? 0,
           });
-          child.material = Array.isArray(child.material) ? clones : clones[0];
-        }
-      });
-      return root;
-    }),
-  );
+      root = new THREE.Mesh(geometry(object.type), material);
+    }
+    root.name = object.name;
+    root.position.fromArray(object.position);
+    root.rotation.set(...object.rotation);
+    const assetScale =
+      object.type === 'asset' && object.assetBounds
+        ? object.dimensions.map((value, i) => (value / object.assetBounds![i]) * object.scale[i])
+        : object.dimensions.map((value, i) => value * object.scale[i]);
+    root.scale.set(...(assetScale as [number, number, number]));
+    root.visible = object.visible;
+    const overrideMaterial =
+      object.type === 'asset' && object.materialId
+        ? await loadSurfaceMaterial(object.materialId, apiBase)
+        : undefined;
+    root.traverse((child) => {
+      if (!(child instanceof THREE.Mesh)) return;
+      child.userData.id = object.id;
+      child.name ||= object.name;
+      child.castShadow = object.type !== 'plane';
+      child.receiveShadow = true;
+      if (object.type === 'asset') {
+        const materials = Array.isArray(child.material) ? child.material : [child.material];
+        const clones = materials.map((original) => {
+          const material = overrideMaterial ? overrideMaterial.clone() : original.clone();
+          if (!object.materialId && material instanceof THREE.MeshStandardMaterial) {
+            if (object.roughness !== undefined) material.roughness = object.roughness;
+            if (object.metalness !== undefined) material.metalness = object.metalness;
+            if (object.color !== '#ffffff') material.color.multiply(new THREE.Color(object.color));
+          }
+          return material;
+        });
+        child.material = Array.isArray(child.material) ? clones : clones[0];
+      }
+    });
+    return root;
+  };
+  const items: THREE.Object3D[] = options.sequential
+    ? []
+    : await Promise.all(state.objects.map(createItem));
+  if (options.sequential) for (const object of state.objects) items.push(await createItem(object));
   for (const item of items) {
     world.add(item);
   }
