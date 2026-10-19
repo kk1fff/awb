@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { parse as parseToml } from 'smol-toml';
 import { ToolError } from '../engine/scene.js';
+import { leadOverview } from './instructions.js';
 
 async function readRegular(file: string): Promise<string | undefined> {
   const stat = await lstat(file).catch((error: NodeJS.ErrnoException) => {
@@ -26,17 +27,7 @@ async function atomicText(file: string, text: string): Promise<void> {
 export async function refreshDesignerInstructions(root: string): Promise<void> {
   const start = '<!-- BEGIN FIELDWORK DESIGNER -->';
   const end = '<!-- END FIELDWORK DESIGNER -->';
-  const managed = [
-    start,
-    '## Fieldwork lead designer',
-    'The human-launched agent in the main session is the lead designer. A host subagent given a reservation is a specialist, even if it inherits this file. Read `get_project_info` and `get_designer_status`.',
-    'For substantial scenes, divide independent parts among specialist designers to improve detail. Handle small tasks directly when delegation adds no value.',
-    'Lead: before creating each host-runtime subagent, call `reserve_designer_slot` and pass its reservation ID and task to that subagent. The limit includes the lead.',
-    'Each subagent calls `open_designer_session` when it starts, passes its returned `sessionId` on every Fieldwork scene tool call, renders and inspects its work, then calls `complete_designer_session`.',
-    'Lead: communicate with subagents through your host agent runtime. Review their actual PNGs and handoffs, combine accepted work in the main session, then call `confirm_designer_session` to free the slot. Use `abort_designer_slot` if a subagent cannot finish.',
-    'Build and change scenes only through public Fieldwork tools. Preserve separate session folders and evidence.',
-    end,
-  ].join('\n');
+  const managed = [start, leadOverview, end].join('\n');
   for (const name of ['AGENTS.md', 'CLAUDE.md']) {
     const file = path.join(root, name);
     const existing = (await readRegular(file)) ?? '';
@@ -108,6 +99,14 @@ export async function refreshAgentConfig(
   )
     throw new ToolError('AGENT_CONFIG_CONFLICT', `Invalid mcp in '${openCodePath}'.`);
   ensureManaged(openCode.mcp?.fieldwork, openCodePath, 'environment');
+  if (
+    openCode.instructions !== undefined &&
+    (!Array.isArray(openCode.instructions) ||
+      openCode.instructions.some((item: unknown) => typeof item !== 'string'))
+  )
+    throw new ToolError('AGENT_CONFIG_CONFLICT', `Invalid instructions in '${openCodePath}'.`);
+  const instructionPath = path.relative(targetDir, path.join(root, 'AGENTS.md')) || 'AGENTS.md';
+  openCode.instructions = Array.from(new Set([...(openCode.instructions ?? []), instructionPath]));
   openCode.mcp = {
     ...openCode.mcp,
     fieldwork: {

@@ -1,5 +1,11 @@
 # Tool contract · version 2
 
+## Instruction discovery
+
+Discovery and command HTTP routes: `GET /api/instructions`, `GET /api/instructions/:topic`, `GET /api/health`, `GET /api/state`, `GET /api/tools`, and `POST /api/tools`. The last four also have workspace-scoped forms under `/api/workspaces/:workspaceId`.
+
+The generated project `AGENTS.md` and MCP startup instructions summarize the [instruction map](designer-agent-bootstrap.md). In MCP, call `get_instruction_guide` with no arguments for that map, then pass `topic: "scene"`, `"evidence"`, `"assets"`, `"delegation"`, or `"tools"` to read the needed guide. HTTP clients use `GET /api/instructions` and `GET /api/instructions/<topic>` for the same Markdown. These read-only calls do not change a scene revision. This document is the `tools` topic and gives the exact API contract; topic guides explain how to apply it.
+
 Submit `POST /api/tools` with JSON `{ "tool": "create_object", "arguments": { ... } }`. The maximum request body is 1 MB. Responses always include `success`, a server-generated `executionId`, `sceneRevision`, and either `result` or `error: { code, message, details? }`. Semantic validation failures return HTTP 400; other tool failures return 422. The CLI prints the same envelope and exits nonzero on failure.
 
 Fetch `GET /api/tools` for complete JSON schemas, including validation limits. `GET /api/health` reports run ID and tool version. Read endpoints are `/api/state`, `/api/events`, `/api/checkpoints`, `/api/reviews`, and `/api/checkpoints/<id>/scene`. `GET /api/stream` is a server-sent event stream with an initial snapshot, tool-start notifications, and updates; clients reconnecting receive a fresh snapshot. Reads outside the tool endpoint do not create tool events.

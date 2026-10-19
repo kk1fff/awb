@@ -39,7 +39,14 @@ describe('workdir projects', () => {
     expect(claude.mcpServers.other.command).toBe('other');
     expect(claude.mcpServers.fieldwork.env.FIELDWORK_SESSION_ID).toBe(info.main_session);
     expect(openCode.theme).toBe('dark');
+    expect(openCode.instructions).toContain('AGENTS.md');
     expect(openCode.mcp.fieldwork.environment.FIELDWORK_WORKDIR).toBe(workdir);
+    const specialistDir = path.join(workdir, `session-${info.main_session}`);
+    await refreshAgentConfig(workdir, info.main_session, process.cwd(), specialistDir);
+    const specialistOpenCode = JSON.parse(
+      await readFile(path.join(specialistDir, 'opencode.json'), 'utf8'),
+    );
+    expect(specialistOpenCode.instructions).toContain('../AGENTS.md');
     await refreshAgentConfig(workdir, info.main_session, process.cwd());
     expect(
       (await readFile(path.join(workdir, '.codex/config.toml'), 'utf8')).match(

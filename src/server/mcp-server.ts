@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { toolSchemas, type ToolName } from '../shared/schema.js';
 
 export const fieldworkInstructions =
-  'Fieldwork was started by a human for one project. The main agent is the lead designer; a host subagent with a reservation is a specialist. The MCP connection is bound to the current project, session, and server run. First call get_project_info, get_designer_status, and get_workspace_context. Lead: for substantial scenes, split independent parts for detail, reserve_designer_slot before spawning each host subagent, review its image and handoff, then confirm_designer_session; the concurrent limit includes the lead. Specialist: open_designer_session with the supplied reservation, pass its sessionId on every scene tool call, render and inspect, then complete_designer_session. If the project goal is empty and the human supplied one, update_project_info. Build only through public tools; combine submodule scenes through explicit handoffs. Make evidence-based corrections, save, reload, and verify from a fresh scene when testing a fix. Never download assets. Fetch the complete guide from GET ${SCENE_API}/api/instructions in the Fieldwork launcher shell; the repository copy at docs/designer-agent-bootstrap.md is not in the project workdir.';
+  'Fieldwork binds this MCP connection to the current project, session, and server run. The human-launched agent is the lead; a reserved subagent is a specialist. First call get_project_info, get_designer_status, and get_workspace_context. Record an empty main goal with update_project_info; update_workspace_context cannot set the main goal. Public tools cover context, scene primitives and assets, camera and lighting, rendering and review, saving and export, and designer sessions. Call get_instruction_guide with no topic to read the short map, then call it with the relevant topic before using unfamiliar APIs: scene, evidence, assets, delegation, or tools. Build scenes only through public tools. Render and open the actual PNG, make evidence-based corrections, then save and verify. For substantial independent parts, reserve a designer slot before creating a host subagent; review its handoff before confirming closure. Never download assets.';
 
 const descriptions: Record<ToolName, string> = {
   get_project_info: 'Read the project goal, main session ID, and agent context.',
@@ -51,6 +51,41 @@ export function createFieldworkMcpServer(options: { api?: string; workspaceId?: 
   const server = new McpServer(
     { name: 'fieldwork', version: '2.0.0' },
     { instructions: fieldworkInstructions },
+  );
+  server.registerTool(
+    'get_instruction_guide',
+    {
+      description:
+        'Browse Fieldwork instructions. Omit topic for the short index; choose scene, evidence, assets, delegation, or tools for a detailed guide. Read relevant guidance before unfamiliar APIs.',
+      inputSchema: {
+        topic: z.enum(['scene', 'evidence', 'assets', 'delegation', 'tools']).optional(),
+      },
+    },
+    async ({ topic }) => {
+      try {
+        const response = await fetch(`${api}/api/instructions${topic ? `/${topic}` : ''}`, {
+          signal: AbortSignal.timeout(10_000),
+        });
+        if (!response.ok)
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: `Instruction guide unavailable: HTTP ${response.status}`,
+              },
+            ],
+            isError: true,
+          };
+        return { content: [{ type: 'text' as const, text: await response.text() }] };
+      } catch (error) {
+        return {
+          content: [
+            { type: 'text' as const, text: `Instruction guide unavailable: ${String(error)}` },
+          ],
+          isError: true,
+        };
+      }
+    },
   );
   for (const [name, schema] of Object.entries(toolSchemas) as [
     ToolName,

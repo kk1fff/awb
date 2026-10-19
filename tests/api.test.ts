@@ -431,13 +431,19 @@ describe('public tool API', () => {
     expect(response.headers.get('content-type')).toContain('text/markdown');
     expect(Buffer.from(await response.arrayBuffer())).toEqual(guide);
     for (const phrase of [
-      'host agent runtime',
-      'reserve_designer_slot',
-      'Promote explicitly',
-      'photographic plausibility',
-      'curl "$SCENE_API/api/instructions"',
+      'get_instruction_guide',
+      '/api/instructions/scene',
+      'reserve a designer slot',
+      'curl "$SCENE_API/api/instructions/<topic>"',
     ])
       expect(guide.toString()).toContain(phrase);
+    for (const topic of ['scene', 'evidence', 'assets', 'delegation', 'tools']) {
+      const topicResponse = await fetch(`${base}/api/instructions/${topic}`);
+      expect(topicResponse.status).toBe(200);
+      expect(topicResponse.headers.get('content-type')).toContain('text/markdown');
+      expect((await topicResponse.text()).length).toBeGreaterThan(100);
+    }
+    expect((await fetch(`${base}/api/instructions/unknown`)).status).toBe(404);
 
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     const createWorkspaceResponse = await fetch(`${base}/api/workspaces`, {
@@ -453,9 +459,16 @@ describe('public tool API', () => {
       await mcpServer.connect(serverTransport);
       await client.connect(clientTransport);
       expect(client.getInstructions()).toBe(fieldworkInstructions);
-      expect(client.getInstructions()).toContain('GET ${SCENE_API}/api/instructions');
-      expect(client.getInstructions()).toContain('not in the project workdir');
-      expect(client.getInstructions()).toContain('fresh scene');
+      expect(client.getInstructions()).toContain('get_instruction_guide');
+      const topicIndex = await client.callTool({ name: 'get_instruction_guide', arguments: {} });
+      expect(topicIndex.content).toEqual([{ type: 'text', text: guide.toString() }]);
+      const sceneGuide = await client.callTool({
+        name: 'get_instruction_guide',
+        arguments: { topic: 'scene' },
+      });
+      expect(sceneGuide.content).toEqual([
+        { type: 'text', text: await (await fetch(`${base}/api/instructions/scene`)).text() },
+      ]);
     } finally {
       await client.close();
       await mcpServer.close();

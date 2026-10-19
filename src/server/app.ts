@@ -1,5 +1,4 @@
 import express, { type ErrorRequestHandler, type Router } from 'express';
-import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
 import { toolSchemas } from '../shared/schema.js';
@@ -9,6 +8,7 @@ import { ToolError } from '../engine/scene.js';
 import { importSceneBundle } from './scene-bundle.js';
 import type { ProjectStore } from './project.js';
 import { DesignerSlots } from './designer-slots.js';
+import { instructionFiles, readInstructionTopic } from './instructions.js';
 
 async function registerServiceRoutes(router: Router, service: ToolService, workspaceId: string) {
   const scoped = workspaceId !== 'default';
@@ -304,8 +304,21 @@ export async function createApp(
 
   app.get('/api/instructions', async (_req, res, next) => {
     try {
-      const guide = await readFile(path.resolve(process.cwd(), 'docs/designer-agent-bootstrap.md'));
-      res.type('text/markdown').send(guide);
+      res.type('text/markdown').send(await readInstructionTopic('index'));
+    } catch (error) {
+      next(error);
+    }
+  });
+  app.get('/api/instructions/:topic', async (req, res, next) => {
+    try {
+      const topic = String(req.params.topic);
+      if (topic === 'index' || !Object.hasOwn(instructionFiles, topic)) {
+        res.status(404).json({ error: `Unknown instruction topic '${topic}'.` });
+        return;
+      }
+      res
+        .type('text/markdown')
+        .send(await readInstructionTopic(topic as keyof typeof instructionFiles));
     } catch (error) {
       next(error);
     }

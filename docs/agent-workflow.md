@@ -4,7 +4,7 @@ Start Fieldwork with `./start.sh --workdir ~/project1`, then launch Codex, Claud
 
 The workdir contains `info.yaml` with the project goal, main session UUID, and free-form agent context. If the goal is empty, record the human's goal with `update_project_info`. Session data is stored under `session-<uuid>/`. Fieldwork refreshes its project-scoped MCP entries on every launch; each connection verifies the current server run and session. In the launcher shell, the generated `codex` wrapper also supplies the binding for non-Git projects.
 
-For the persistent designer instructions supplied during MCP initialization, see [`designer-agent-bootstrap.md`](designer-agent-bootstrap.md); API-only agents can fetch the same guide from `GET /api/instructions`.
+For the persistent designer overview supplied during MCP initialization, see the [instruction map](designer-agent-bootstrap.md). Agents can call `get_instruction_guide` without a topic for this map, then request `scene`, `evidence`, `assets`, `delegation`, or `tools` as needed. API-only agents can fetch the same map from `GET /api/instructions` and each guide from `GET /api/instructions/<topic>`.
 
 ## Choose a mode from the request
 

@@ -1,5 +1,21 @@
 # Development feedback
 
+## Lead designers need a navigable instruction map
+
+- Run: `instruction-guides-20261019T192344Z`, initial OpenCode car and room probes.
+- Evidence: the car probe proposed setting the main goal through `update_workspace_context`, which returns `PROJECT_GOAL_ONLY`; the room probe confused object names with asset IDs and placed a door against a solid wall.
+- Impact: agents could plan invalid calls or visually ineffective geometry despite having tool schemas.
+- Improvement: keep the generated lead overview short, expose topic guides through `get_instruction_guide`, and name these pitfalls in the delegation and scene guides. Require every registered agent-facing API to appear in its assigned guide.
+- Verification: fresh OpenCode car and room probes read the guides and corrected both planning mistakes; instruction coverage and API tests passed.
+
+## First render after workdir restart can be blank
+
+- Run: `instruction-guides-20261019T192344Z`, disposable visual scene, two server restarts.
+- Evidence: recovered state had two objects at revision 5; the first `render_scene` PNG was blank on both restarts, while the next render showed the objects. The Playwright development server did not reproduce it.
+- Impact: a successful render response may give the agent misleading visual evidence after recovery.
+- Improvement: isolate the production workdir renderer readiness failure with a reliable regression case, then fix the renderer. Preserve the existing requirement to open the actual PNG.
+- Verification: from a fresh workdir restart, the first render should show both objects at the recovered revision across repeated runs. The defect remains open.
+
 ## Browser readiness needs clean resource loading
 
 - Run: first Linux smoke attempt during implementation on 2026-10-17.

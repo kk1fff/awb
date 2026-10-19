@@ -108,6 +108,10 @@ A human should be able to distinguish **product quality** (the generated scene) 
 
 ## Evolving this AGENTS.md
 
+### Instruction architecture
+
+The generated workdir `AGENTS.md`/`CLAUDE.md` section and MCP startup text are summaries of the served `/api/instructions` index. Cap each automatic overview at 200 words and the index at 400 words. The index points to `scene`, `evidence`, `assets`, `delegation`, and `tools` guides; `get_instruction_guide` exposes the same content through MCP. The typed instruction catalog maps every agent-facing tool and HTTP operation to a guide. When adding or changing an operation, update its guide and catalog entry together, then run the instruction coverage tests. Preserve the distinction between summaries, topic guidance, and exact tool schemas; do not paste the full guide into startup text.
+
 Treat this file as an experiment-backed operational policy, **not** a log and not an invitation for unrestricted self-rewriting.
 
 1. During development, collect concrete friction and recurring mistakes in `agent-process-feedback.md` with: problem, run ID, evidence, impact, proposed rule, and a way to verify improvement.

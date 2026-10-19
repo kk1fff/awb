@@ -98,7 +98,8 @@ describe('UUID-bound MCP workspace', () => {
     const workspace = await createWorkspace('MCP bound');
     await startMcp(workspace.id);
     const listed = await client!.listTools();
-    expect(listed.tools).toHaveLength(25);
+    expect(listed.tools).toHaveLength(26);
+    expect(listed.tools.map((entry) => entry.name)).toContain('get_instruction_guide');
     expect(listed.tools.map((entry) => entry.name)).toContain('get_project_info');
     expect(listed.tools.map((entry) => entry.name)).toContain('export_scene_bundle');
     expect(listed.tools.map((entry) => entry.name)).toContain('get_workspace_context');
