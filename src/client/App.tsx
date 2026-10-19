@@ -57,6 +57,11 @@ export function App() {
   const [projectInfo, setProjectInfo] = useState<{ goal: string; main_session: string } | null>(
     null,
   );
+  const [designerStatus, setDesignerStatus] = useState<{
+    limit: number;
+    used: number;
+    reservations: { reservationId: string; task: string; state: string; sessionId?: string }[];
+  }>();
   const [workspaceFilter, setWorkspaceFilter] = useState<'all' | 'active' | 'archived'>('all');
   const [bundleName, setBundleName] = useState('specialist-submodel');
   const [bundleMessage, setBundleMessage] = useState('');
@@ -118,6 +123,13 @@ export function App() {
       void get<{ project: { goal: string; main_session: string } | null }>('/api/project')
         .then((value) => {
           if (mounted.current) setProjectInfo(value.project);
+          if (value.project) {
+            void get<NonNullable<typeof designerStatus>>('/api/designers')
+              .then((status) => {
+                if (mounted.current) setDesignerStatus(status);
+              })
+              .catch(() => undefined);
+          }
         })
         .catch(() => undefined);
     };
@@ -349,10 +361,28 @@ export function App() {
       </header>
       <section className="workspace-dashboard panel" aria-label="Workspace dashboard">
         {projectInfo && (
-          <div className="project-goal" data-testid="project-goal">
-            <strong>Project goal</strong>
-            <span>{projectInfo.goal || 'Awaiting a goal from the human.'}</span>
-          </div>
+          <>
+            <div className="project-goal" data-testid="project-goal">
+              <strong>Project goal</strong>
+              <span>{projectInfo.goal || 'Awaiting a goal from the human.'}</span>
+            </div>
+            {designerStatus && (
+              <div className="designer-status" data-testid="designer-status">
+                <strong>
+                  Designers {designerStatus.used}/{designerStatus.limit}
+                </strong>
+                <span>Includes the lead designer</span>
+                {designerStatus.reservations
+                  .filter((entry) => !['closed', 'aborted'].includes(entry.state))
+                  .map((entry) => (
+                    <span key={entry.reservationId}>
+                      {entry.task} · {entry.state}
+                      {entry.sessionId ? ` · ${entry.sessionId.slice(0, 8)}` : ''}
+                    </span>
+                  ))}
+              </div>
+            )}
+          </>
         )}
         <div className="panel-title">
           <div>
@@ -413,7 +443,7 @@ export function App() {
                       </small>
                       <code>{item.id}</code>
                     </button>
-                    {item.id !== 'default' && (
+                    {item.id !== 'default' && item.id !== projectInfo?.main_session && (
                       <div className="workspace-card-actions">
                         {item.workspaceStatus === 'active' ? (
                           <button onClick={() => void lifecycleAction('archive', item.id)}>
@@ -573,6 +603,7 @@ export function App() {
             )}
             <div className="brief-controls">
               {workspaceId !== 'default' &&
+                workspaceId !== projectInfo?.main_session &&
                 (isArchived ? (
                   <button onClick={() => void lifecycleAction('restore')}>Restore workspace</button>
                 ) : (

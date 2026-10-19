@@ -23,6 +23,39 @@ async function atomicText(file: string, text: string): Promise<void> {
   await rename(temp, file);
 }
 
+export async function refreshDesignerInstructions(root: string): Promise<void> {
+  const start = '<!-- BEGIN FIELDWORK DESIGNER -->';
+  const end = '<!-- END FIELDWORK DESIGNER -->';
+  const managed = [
+    start,
+    '## Fieldwork lead designer',
+    'The human-launched agent in the main session is the lead designer. A host subagent given a reservation is a specialist, even if it inherits this file. Read `get_project_info` and `get_designer_status`.',
+    'For substantial scenes, divide independent parts among specialist designers to improve detail. Handle small tasks directly when delegation adds no value.',
+    'Lead: before creating each host-runtime subagent, call `reserve_designer_slot` and pass its reservation ID and task to that subagent. The limit includes the lead.',
+    'Each subagent calls `open_designer_session` when it starts, passes its returned `sessionId` on every Fieldwork scene tool call, renders and inspects its work, then calls `complete_designer_session`.',
+    'Lead: communicate with subagents through your host agent runtime. Review their actual PNGs and handoffs, combine accepted work in the main session, then call `confirm_designer_session` to free the slot. Use `abort_designer_slot` if a subagent cannot finish.',
+    'Build and change scenes only through public Fieldwork tools. Preserve separate session folders and evidence.',
+    end,
+  ].join('\n');
+  for (const name of ['AGENTS.md', 'CLAUDE.md']) {
+    const file = path.join(root, name);
+    const existing = (await readRegular(file)) ?? '';
+    const first = existing.indexOf(start);
+    const last = existing.indexOf(end);
+    if (
+      first < 0 !== last < 0 ||
+      (first >= 0 &&
+        (last < first ||
+          existing.indexOf(start, first + 1) >= 0 ||
+          existing.indexOf(end, last + 1) >= 0))
+    )
+      throw new ToolError('AGENT_CONFIG_CONFLICT', `Broken Fieldwork instructions in '${file}'.`);
+    const base =
+      first >= 0 ? existing.slice(0, first) + existing.slice(last + end.length) : existing;
+    await atomicText(file, `${base.trimEnd()}${base.trim() ? '\n\n' : ''}${managed}\n`);
+  }
+}
+
 function parseJsonConfig(file: string, source: string | undefined): Record<string, any> {
   if (!source) return {};
   let value: unknown;

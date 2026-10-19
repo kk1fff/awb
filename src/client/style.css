@@ -1405,3 +1405,12 @@ h1 > span {
 .project-goal strong {
   white-space: nowrap;
 }
+
+.designer-status {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 1rem;
+  padding: 0.65rem 1rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+  font-size: 0.85rem;
+}

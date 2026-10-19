@@ -8,6 +8,7 @@ import { WorkspaceManager } from './workspaces.js';
 import { ToolError } from '../engine/scene.js';
 import { importSceneBundle } from './scene-bundle.js';
 import type { ProjectStore } from './project.js';
+import { DesignerSlots } from './designer-slots.js';
 
 async function registerServiceRoutes(router: Router, service: ToolService, workspaceId: string) {
   const scoped = workspaceId !== 'default';
@@ -172,7 +173,11 @@ async function registerServiceRoutes(router: Router, service: ToolService, works
 }
 
 export async function createApp(
-  options: ServiceOptions & { clientDir?: string; projectStore?: ProjectStore },
+  options: ServiceOptions & {
+    clientDir?: string;
+    projectStore?: ProjectStore;
+    concurrentLimit?: number;
+  },
 ) {
   const projectInfo = options.projectStore ? await options.projectStore.read() : undefined;
   const manager = new WorkspaceManager({
@@ -187,6 +192,9 @@ export async function createApp(
       : {}),
   });
   await manager.init();
+  const designers = projectInfo
+    ? new DesignerSlots(options.concurrentLimit ?? 4, manager, projectInfo.main_session)
+    : undefined;
   const service = manager.defaultService;
   const app = express();
   app.disable('x-powered-by');
@@ -212,6 +220,82 @@ export async function createApp(
           .strict()
           .refine((value) => value.goal !== undefined || value.agentContext !== undefined);
         res.json({ project: await options.projectStore!.update(schema.parse(req.body)) });
+      } catch (error) {
+        next(error);
+      }
+    });
+  }
+
+  if (designers) {
+    app.get('/api/designers', (_req, res) => res.json(designers.status()));
+    app.post('/api/designers/reservations', (req, res, next) => {
+      try {
+        const { task } = z
+          .object({ task: z.string().trim().min(1).max(2000) })
+          .strict()
+          .parse(req.body);
+        res.status(201).json({ reservation: designers.reserve(task), status: designers.status() });
+      } catch (error) {
+        next(error);
+      }
+    });
+    app.post('/api/designers/reservations/:reservationId/open', async (req, res, next) => {
+      try {
+        const { name, goal, existingSessionId } = z
+          .object({
+            name: z.string().trim().min(1).max(100),
+            goal: z.string().trim().min(1).max(2000),
+            existingSessionId: z.uuid().optional(),
+          })
+          .strict()
+          .parse(req.body);
+        res.status(201).json({
+          reservation: await designers.open(
+            String(req.params.reservationId),
+            name,
+            goal,
+            existingSessionId,
+          ),
+          status: designers.status(),
+        });
+      } catch (error) {
+        next(error);
+      }
+    });
+    app.post('/api/designers/sessions/:sessionId/complete', (req, res, next) => {
+      try {
+        const { summary } = z
+          .object({ summary: z.string().trim().min(1).max(4000) })
+          .strict()
+          .parse(req.body);
+        res.json({
+          reservation: designers.complete(String(req.params.sessionId), summary),
+          status: designers.status(),
+        });
+      } catch (error) {
+        next(error);
+      }
+    });
+    app.post('/api/designers/sessions/:sessionId/confirm', (req, res, next) => {
+      try {
+        res.json({
+          reservation: designers.confirm(String(req.params.sessionId)),
+          status: designers.status(),
+        });
+      } catch (error) {
+        next(error);
+      }
+    });
+    app.post('/api/designers/reservations/:reservationId/abort', (req, res, next) => {
+      try {
+        const { reason } = z
+          .object({ reason: z.string().trim().min(1).max(2000) })
+          .strict()
+          .parse(req.body);
+        res.json({
+          reservation: designers.abort(String(req.params.reservationId), reason),
+          status: designers.status(),
+        });
       } catch (error) {
         next(error);
       }
@@ -329,6 +413,21 @@ export async function createApp(
         return;
       }
       const descriptor = await manager.describe(String(id));
+      const readTool = [
+        'get_workspace_context',
+        'get_project_info',
+        'list_objects',
+        'inspect_object',
+        'search_assets',
+      ].includes(req.body?.tool);
+      if (
+        designers &&
+        id !== projectInfo?.main_session &&
+        req.header('x-fieldwork-designer') === '1' &&
+        req.method !== 'GET' &&
+        !readTool
+      )
+        designers.assertActive(String(id));
       if (descriptor.workspaceStatus === 'archived' && req.method !== 'GET') {
         res.status(409).json({
           error: {

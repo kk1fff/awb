@@ -22,31 +22,68 @@ if (!health.ok || active.project.project_id !== info.project_id || active.runId 
   throw new Error('Fieldwork runtime is stale or unavailable.');
 const appRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../');
 const [group, action, ...args] = process.argv.slice(2);
-if (group !== 'session' || !['shell', 'create'].includes(action ?? '')) {
+const post = async (route: string, body: unknown) => {
+  const response = await fetch(`${runtime.apiUrl}${route}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const result = (await response.json()) as Record<string, any>;
+  if (!response.ok) throw new Error(result.error?.message ?? JSON.stringify(result));
+  return result;
+};
+if (
+  group !== 'session' ||
+  !['shell', 'create', 'complete', 'confirm', 'abort', 'status'].includes(action ?? '')
+) {
   console.log(
-    'Usage: fieldwork session shell <uuid> | fieldwork session create --name <name> --goal <goal>',
+    'Usage: fieldwork session create --name <name> --goal <goal> [--reservation <uuid>] | shell <uuid> | complete <uuid> --summary <text> | confirm <uuid> | abort <reservation-uuid> --reason <text> | status',
   );
   process.exitCode = 2;
+} else if (action === 'status') {
+  const response = await fetch(`${runtime.apiUrl}/api/designers`);
+  console.log(JSON.stringify(await response.json(), null, 2));
 } else if (action === 'create') {
-  const option = (name: string) => args[args.indexOf(`--${name}`) + 1];
+  const option = (name: string) => {
+    const index = args.indexOf(`--${name}`);
+    return index < 0 ? undefined : args[index + 1];
+  };
   const name = option('name');
   const goal = option('goal');
   if (!name || !goal) throw new Error('Session creation requires --name and --goal.');
-  const response = await fetch(`${runtime.apiUrl}/api/workspaces`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, goal }),
-  });
-  const result = (await response.json()) as { workspace?: { id: string }; error?: unknown };
-  if (!response.ok || !result.workspace) throw new Error(JSON.stringify(result.error));
-  await refreshAgentConfig(
-    root,
-    result.workspace.id,
-    appRoot,
-    path.join(root, `session-${result.workspace.id}`),
-  );
-  console.log(`Created session ${result.workspace.id}`);
-  console.log(`Enter it with: fieldwork session shell ${result.workspace.id}`);
+  let reservationId = option('reservation');
+  const automatic = !reservationId;
+  if (!reservationId)
+    reservationId = (await post('/api/designers/reservations', { task: goal })).reservation
+      .reservationId;
+  try {
+    const sessionId = (
+      await post(`/api/designers/reservations/${reservationId}/open`, { name, goal })
+    ).reservation.sessionId;
+    await refreshAgentConfig(root, sessionId, appRoot, path.join(root, `session-${sessionId}`));
+    console.log(`Created session ${sessionId} using reservation ${reservationId}`);
+    console.log(`Enter it with: fieldwork session shell ${sessionId}`);
+  } catch (error) {
+    if (automatic)
+      await post(`/api/designers/reservations/${reservationId}/abort`, {
+        reason: 'Session creation failed.',
+      });
+    throw error;
+  }
+} else if (action === 'complete' || action === 'confirm' || action === 'abort') {
+  const id = args[0];
+  if (!id || !/^[0-9a-f-]{36}$/i.test(id)) throw new Error('A session UUID is required.');
+  const result =
+    action === 'complete'
+      ? await post(`/api/designers/sessions/${id}/complete`, {
+          summary: args[args.indexOf('--summary') + 1],
+        })
+      : action === 'abort'
+        ? await post(`/api/designers/reservations/${id}/abort`, {
+            reason: args[args.indexOf('--reason') + 1],
+          })
+        : await post(`/api/designers/sessions/${id}/confirm`, {});
+  console.log(JSON.stringify(result, null, 2));
 } else {
   const id = args[0];
   if (!id || !/^[0-9a-f-]{36}$/i.test(id)) throw new Error('A session UUID is required.');
@@ -57,7 +94,45 @@ if (group !== 'session' || !['shell', 'create'].includes(action ?? '')) {
     signal: AbortSignal.timeout(3000),
   });
   if (!descriptor.ok) throw new Error(`Session ${id} is unavailable.`);
-  await refreshAgentConfig(root, id, appRoot, sessionDir);
+  let resumedReservationId: string | undefined;
+  if (id !== info.main_session) {
+    const status = (await fetch(`${runtime.apiUrl}/api/designers`).then((response) =>
+      response.json(),
+    )) as {
+      reservations: { sessionId?: string; state: string }[];
+    };
+    if (!status.reservations.some((entry) => entry.sessionId === id && entry.state === 'active')) {
+      const existing = (await descriptor.json()) as { workspace: { name: string; goal: string } };
+      const reservationId = (
+        await post('/api/designers/reservations', { task: `Continue ${existing.workspace.name}` })
+      ).reservation.reservationId;
+      resumedReservationId = reservationId;
+      try {
+        await post(`/api/designers/reservations/${reservationId}/open`, {
+          name: existing.workspace.name,
+          goal: existing.workspace.goal,
+          existingSessionId: id,
+        });
+      } catch (error) {
+        await post(`/api/designers/reservations/${reservationId}/abort`, {
+          reason: 'Could not continue the session.',
+        });
+        throw error;
+      }
+      console.log(
+        `Reserved slot ${reservationId} to continue session ${id}. Complete and confirm it to free capacity.`,
+      );
+    }
+  }
+  try {
+    await refreshAgentConfig(root, id, appRoot, sessionDir);
+  } catch (error) {
+    if (resumedReservationId)
+      await post(`/api/designers/reservations/${resumedReservationId}/abort`, {
+        reason: 'Could not prepare session configuration.',
+      });
+    throw error;
+  }
   const shell = process.env.SHELL || '/bin/bash';
   const child = spawn(shell, ['-i'], {
     cwd: sessionDir,

@@ -82,7 +82,7 @@ describe('UUID-bound MCP workspace', () => {
     return { response, value: JSON.parse(text.text!) as Record<string, any> };
   }
 
-  it('requires an explicit UUID binding and exposes context tools without per-call routing', async () => {
+  it('requires an explicit UUID binding and exposes session-aware scene tools', async () => {
     const previousWorkspaceId = process.env.SCENE_WORKSPACE_ID;
     process.env.SCENE_WORKSPACE_ID = '';
     expect(() => createFieldworkMcpServer({ api: 'http://127.0.0.1:1' })).toThrow(
@@ -98,11 +98,12 @@ describe('UUID-bound MCP workspace', () => {
     const workspace = await createWorkspace('MCP bound');
     await startMcp(workspace.id);
     const listed = await client!.listTools();
-    expect(listed.tools).toHaveLength(19);
+    expect(listed.tools).toHaveLength(25);
     expect(listed.tools.map((entry) => entry.name)).toContain('get_project_info');
     expect(listed.tools.map((entry) => entry.name)).toContain('export_scene_bundle');
     expect(listed.tools.map((entry) => entry.name)).toContain('get_workspace_context');
     expect(listed.tools.map((entry) => entry.name)).toContain('update_workspace_context');
+    expect(listed.tools.map((entry) => entry.name)).toContain('reserve_designer_slot');
     for (const entry of listed.tools) {
       const input = entry.inputSchema as {
         properties?: Record<string, unknown>;

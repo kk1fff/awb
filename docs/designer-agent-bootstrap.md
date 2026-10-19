@@ -5,8 +5,8 @@ Use this guide when asked to build or improve a scene with Fieldwork. The host a
 ## Before scene work
 
 1. Identify the task mode. Build or edit a scene through public tools and the UI. Change application source only when the user asks for a product, interface, or workflow change.
-2. Call `get_project_info` and `get_workspace_context` before changing the scene. If the project goal is empty, record the human's goal with `update_project_info`. Check that the workspace ID matches the session folder or assignment. Each agent shell receives a project and session binding from the launcher; the MCP connection verifies the current server run. The browser uses `/?workspace=<uuid>` to inspect a specific session.
-3. If the work needs specialists, delegate through the host runtime (Codex/Claude/OpenCode agent features). Fieldwork does not spawn agents. Create one session per specialist with `fieldwork session create --name "..." --goal "..."`, then use `fieldwork session shell <uuid>` to open a shell in its folder with the matching MCP binding. Sessions isolate app state logically; they are not OS or security boundaries.
+2. Call `get_project_info`, `get_designer_status`, and `get_workspace_context` before changing the scene. If the project goal is empty, record the human's goal with `update_project_info`. The main agent is the lead designer. The concurrent limit includes the lead; default capacity is four. The browser uses `/?workspace=<uuid>` to inspect a specific session.
+3. For substantial scenes, the lead divides independent parts when doing so improves detail. Before creating each host-runtime specialist, call `reserve_designer_slot` and pass the reservation ID and task directly to that subagent. The subagent calls `open_designer_session` when it starts, then passes its `sessionId` on every scene tool call. It renders, inspects, saves, and calls `complete_designer_session`. The lead inspects the actual result, combines accepted work in the main session, and calls `confirm_designer_session` to free the slot. Use `abort_designer_slot` when a subagent fails. Fieldwork tracks sessions; the host runtime creates and communicates with agents.
 4. Keep designer scene work paused while an engineer is changing shared application source. Resume after review/commit and rerun the scene from a fresh scene using the accepted goal and criteria.
 
 ## Build with public tools
@@ -23,7 +23,7 @@ For each requested scene:
 
 ## Specialist handoff and asset promotion
 
-Each specialist should work in its own workspace and keep that workspace focused on one intended submodel. After saving the scene, the specialist can call `export_scene`. Export includes visible scene geometry, so unrelated visible objects will also be in the handoff.
+Each specialist should work in its own session and keep that session focused on one intended submodel. After saving the scene, the specialist can call `export_scene` with its `sessionId`. Export includes visible scene geometry, so unrelated visible objects will also be in the handoff.
 
 For a portable handoff, call `export_scene_bundle` or use **Export handoff ZIP** in the browser. Import the ZIP in the target workspace through the dashboard file picker or `POST /api/workspaces/<target-uuid>/bundles/import` with `Content-Type: application/zip` and a unique `X-Scene-Name`. The import creates two outputs: an editable named source scene (including referenced local assets) and a placeable GLB catalog asset with new target IDs and lineage. It does not switch or replace the target's active scene. Follow the success message: use `load_scene` for the editable source save, or `search_assets` then `create_object` to place the GLB. Promote explicitly for same-installation handoff with `promote_asset`, using source workspace/run/export execution IDs; the bound target receives a new catalog ID and lineage. Do not assume catalogs are shared or mutate another workspace's catalog implicitly.
 

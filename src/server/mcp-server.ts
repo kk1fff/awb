@@ -1,8 +1,9 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { z } from 'zod';
 import { toolSchemas, type ToolName } from '../shared/schema.js';
 
 export const fieldworkInstructions =
-  'Fieldwork was started by a human for one project. This MCP process is bound to one UUID session through SCENE_WORKSPACE_ID and the run-specific project connection. First call get_project_info and get_workspace_context. If the project goal is empty and the human has supplied one, call update_project_info with the current info_revision to record it in info.yaml. Build scenes through public tools only; update session task progress with update_workspace_context. Submodule sessions have separate scenes; combine them in the main session through explicit exports/imports. Render and inspect the actual PNG, make evidence-based corrections, save, reload, and verify the scene from a fresh scene when testing a fix. Never download assets. Escalate reproducible app limitations with calls and evidence. Read docs/designer-agent-bootstrap.md or GET /api/instructions for the complete workflow.';
+  'Fieldwork was started by a human for one project. The main agent is the lead designer; a host subagent with a reservation is a specialist. The MCP connection is bound to one run through SCENE_WORKSPACE_ID. First call get_project_info, get_designer_status, and get_workspace_context. Lead: for substantial scenes, split independent parts for detail, reserve_designer_slot before spawning each host subagent, review its image and handoff, then confirm_designer_session; the concurrent limit includes the lead. Specialist: open_designer_session with the supplied reservation, pass its sessionId on every scene tool call, render and inspect, then complete_designer_session. If the project goal is empty and the human supplied one, update_project_info. Build only through public tools; combine submodule scenes through explicit handoffs. Make evidence-based corrections, save, reload, and verify from a fresh scene when testing a fix. Never download assets. Read docs/designer-agent-bootstrap.md or GET /api/instructions for the complete workflow.';
 
 const descriptions: Record<ToolName, string> = {
   get_project_info: 'Read the project goal, main session ID, and agent context.',
@@ -59,12 +60,17 @@ export function createFieldworkMcpServer(options: { api?: string; workspaceId?: 
       name,
       {
         description: descriptions[name],
-        inputSchema: schema.shape,
+        inputSchema:
+          name === 'get_project_info' || name === 'update_project_info'
+            ? schema.shape
+            : { ...schema.shape, sessionId: z.uuid().optional() },
       },
       async (args: unknown) => {
         try {
-          const workspaceId = defaultWorkspaceId;
-          const toolArguments = args && typeof args === 'object' ? args : {};
+          const supplied =
+            args && typeof args === 'object' ? (args as Record<string, unknown>) : {};
+          const { sessionId, ...toolArguments } = supplied;
+          const workspaceId = typeof sessionId === 'string' ? sessionId : defaultWorkspaceId;
           const workspaceEndpoint = `${api}/api/workspaces/${encodeURIComponent(workspaceId)}`;
           const workspaceResponse = await fetch(workspaceEndpoint, {
             signal: AbortSignal.timeout(10_000),
@@ -99,7 +105,7 @@ export function createFieldworkMcpServer(options: { api?: string; workspaceId?: 
           const toolEndpoint = `${workspaceEndpoint}/tools`;
           const response = await fetch(toolEndpoint, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', 'X-Fieldwork-Designer': '1' },
             body: JSON.stringify({ tool: name, arguments: toolArguments }),
             signal: AbortSignal.timeout(120_000),
           });
@@ -131,5 +137,98 @@ export function createFieldworkMcpServer(options: { api?: string; workspaceId?: 
       },
     );
   }
+  const registerDesigner = (
+    name: string,
+    description: string,
+    shape: Record<string, z.ZodType>,
+    method: 'GET' | 'POST',
+    route: (args: Record<string, unknown>) => string,
+    body?: (args: Record<string, unknown>) => unknown,
+  ) =>
+    server.registerTool(
+      name,
+      { description, inputSchema: shape },
+      async (args: Record<string, unknown>) => {
+        try {
+          const response = await fetch(`${api}${route(args)}`, {
+            method,
+            ...(body
+              ? {
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify(body(args)),
+                }
+              : {}),
+            signal: AbortSignal.timeout(30_000),
+          });
+          const result = await response.json();
+          return {
+            content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
+            isError: !response.ok,
+          };
+        } catch (error) {
+          return {
+            content: [
+              { type: 'text' as const, text: `Fieldwork request failed: ${String(error)}` },
+            ],
+            isError: true,
+          };
+        }
+      },
+    );
+  registerDesigner(
+    'get_designer_status',
+    'Read the current designer limit, occupied slots, and reservations.',
+    {},
+    'GET',
+    () => '/api/designers',
+  );
+  registerDesigner(
+    'reserve_designer_slot',
+    'Lead designer: reserve a slot before creating a subagent.',
+    { task: z.string().trim().min(1).max(2000) },
+    'POST',
+    () => '/api/designers/reservations',
+    (args) => ({ task: args.task }),
+  );
+  registerDesigner(
+    'open_designer_session',
+    'Subagent: create or resume a session from a lead reservation.',
+    {
+      reservationId: z.uuid(),
+      name: z.string().trim().min(1).max(100),
+      goal: z.string().trim().min(1).max(2000),
+      existingSessionId: z.uuid().optional(),
+    },
+    'POST',
+    (args) => `/api/designers/reservations/${args.reservationId}/open`,
+    (args) => ({
+      name: args.name,
+      goal: args.goal,
+      ...(args.existingSessionId ? { existingSessionId: args.existingSessionId } : {}),
+    }),
+  );
+  registerDesigner(
+    'complete_designer_session',
+    'Subagent: mark session work ready for lead review.',
+    { sessionId: z.uuid(), summary: z.string().trim().min(1).max(4000) },
+    'POST',
+    (args) => `/api/designers/sessions/${args.sessionId}/complete`,
+    (args) => ({ summary: args.summary }),
+  );
+  registerDesigner(
+    'confirm_designer_session',
+    'Lead designer: confirm reviewed work and free its slot.',
+    { sessionId: z.uuid() },
+    'POST',
+    (args) => `/api/designers/sessions/${args.sessionId}/confirm`,
+  );
+  registerDesigner(
+    'abort_designer_slot',
+    'Lead designer: free an unused or failed reservation.',
+    { reservationId: z.uuid(), reason: z.string().trim().min(1).max(2000) },
+    'POST',
+    (args) => `/api/designers/reservations/${args.reservationId}/abort`,
+    (args) => ({ reason: args.reason }),
+  );
   return server;
 }

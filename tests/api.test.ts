@@ -432,7 +432,7 @@ describe('public tool API', () => {
     expect(Buffer.from(await response.arrayBuffer())).toEqual(guide);
     for (const phrase of [
       'host agent runtime',
-      'one session per specialist',
+      'reserve_designer_slot',
       'Promote explicitly',
       'photographic plausibility',
     ])

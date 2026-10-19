@@ -20,6 +20,8 @@ For server-only use, including non-interactive launch:
 
 This prints the URL and runs until Ctrl-C or SIGTERM. It prepares the same project-specific MCP configuration. No browser opens automatically. When a coding agent receives the human's goal, it should call `get_project_info`, then `update_project_info` if the goal is empty.
 
+`--concurrent` defaults to 4 and counts the lead designer. The lead reserves a slot before creating a host-runtime specialist. The specialist opens its own session, passes `sessionId` on each scene tool call, and marks work complete. After inspecting the result and handoff, the lead confirms closure to free the slot. Fieldwork limits active sessions; the host runtime creates and communicates with agents.
+
 ## Workdir layout
 
 ```text
@@ -44,7 +46,7 @@ fieldwork session create --name "Pond" --goal "Design a pond"
 fieldwork session shell <session-uuid>
 ```
 
-The second command opens a shell inside that session folder with its own MCP binding. Its scene is isolated from the main scene. Use the browser or public export/import tools to hand finished submodule work to the main session. Fieldwork does not spawn or coordinate coding agents.
+The first command reserves a specialist slot; the second opens a shell inside that session folder with its own MCP binding. Use `fieldwork session complete <uuid> --summary "..."` and `fieldwork session confirm <uuid>` after review. `fieldwork session status` shows capacity. The scene is isolated from the main scene. Use the browser or public export/import tools to hand finished submodule work to the main session. Fieldwork does not spawn coding agents.
 
 Existing `data/workspaces` scenes in this repository are left untouched and are not imported into new workdirs automatically.
 

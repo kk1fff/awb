@@ -7,21 +7,40 @@ import { fileURLToPath } from 'node:url';
 import type { AddressInfo } from 'node:net';
 import { createApp } from './app.js';
 import { ProjectStore } from './project.js';
-import { installSessionCommand, refreshAgentConfig } from './agent-config.js';
+import {
+  installSessionCommand,
+  refreshAgentConfig,
+  refreshDesignerInstructions,
+} from './agent-config.js';
 import { runTerminalShell } from './tui.js';
 
 const argv = process.argv.slice(2);
-const workdirIndex = argv.indexOf('--workdir');
-const noUi = argv.includes('--no-ui');
+let workdirArg: string | undefined;
+let noUi = false;
+let concurrentLimit = 4;
+let validArgs = true;
+for (let index = 0; index < argv.length; index++) {
+  const arg = argv[index];
+  if (arg === '--workdir' && !workdirArg) workdirArg = argv[++index];
+  else if (arg === '--concurrent') {
+    const value = argv[++index];
+    if (!value || !/^[1-9]\d*$/.test(value)) validArgs = false;
+    else concurrentLimit = Number(value);
+  } else if (arg === '--no-ui' && !noUi) noUi = true;
+  else validArgs = false;
+}
 if (
-  workdirIndex < 0 ||
-  !argv[workdirIndex + 1] ||
-  argv.some((arg) => arg.startsWith('--') && !['--workdir', '--no-ui'].includes(arg))
+  !validArgs ||
+  !workdirArg ||
+  workdirArg.startsWith('--') ||
+  !Number.isSafeInteger(concurrentLimit)
 ) {
-  console.error('Usage: start.sh --workdir <project-directory> [--no-ui]');
+  console.error(
+    'Usage: start.sh --workdir <project-directory> [--concurrent <positive-integer>] [--no-ui]',
+  );
   process.exit(2);
 }
-const workdir = path.resolve(argv[workdirIndex + 1]);
+const workdir = path.resolve(workdirArg);
 const appRoot =
   process.env.FIELDWORK_APP_ROOT ??
   path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../');
@@ -98,6 +117,7 @@ try {
     clientUrl: '',
     clientDir: path.join(appRoot, 'dist/client'),
     projectStore: store,
+    concurrentLimit,
   });
   listener = server.app.listen(0, '127.0.0.1');
   await new Promise<void>((resolve, reject) => {
@@ -109,6 +129,7 @@ try {
   const browserUrl = `${apiUrl}/`;
   server.workspaces.setClientUrl(apiUrl);
   await installSessionCommand(workdir, appRoot);
+  await refreshDesignerInstructions(workdir);
   await refreshAgentConfig(workdir, info.main_session, appRoot);
   for (const entry of await readdir(workdir, { withFileTypes: true })) {
     if (!entry.isDirectory() || !/^session-[0-9a-f-]{36}$/i.test(entry.name)) continue;
