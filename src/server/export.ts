@@ -27,18 +27,26 @@ export async function exportScene(
   clientUrl: string,
 ): Promise<SceneExport> {
   ensureFileReader();
-  const useBrowser = scene.objects.some((object) => object.type === 'asset' || object.materialId) || Boolean(scene.lighting.environmentAssetId);
+  const useBrowser =
+    scene.objects.some((object) => object.type === 'asset' || object.materialId) ||
+    Boolean(scene.lighting.environmentAssetId);
   const world = useBrowser ? undefined : await buildWorld(scene);
   try {
     let output: ArrayBuffer;
     if (useBrowser) {
-      const browser = await chromium.launch({ headless: true, channel: 'chromium', timeout: 30_000 });
+      const browser = await chromium.launch({
+        headless: true,
+        channel: 'chromium',
+        timeout: 30_000,
+      });
       try {
         const page = await browser.newPage();
         const browserErrors: string[] = [];
         page.on('pageerror', (error) => browserErrors.push(error.message));
         await page.goto(clientUrl, { waitUntil: 'domcontentloaded', timeout: 30_000 });
-        await page.waitForFunction(() => Boolean(window.__fieldworkExport), undefined, { timeout: 30_000 });
+        await page.waitForFunction(() => Boolean(window.__fieldworkExport), undefined, {
+          timeout: 30_000,
+        });
         if (browserErrors.length) throw new Error(browserErrors.join('\n'));
         const encoded = await page.evaluate(async (value) => {
           if (!window.__fieldworkExport) throw new Error('Browser GLB exporter is not ready.');
@@ -49,9 +57,13 @@ export async function exportScene(
         await browser.close();
       }
     } else {
-      for (const child of [...world!.children]) if (child.type.includes('Light')) world!.remove(child);
+      for (const child of [...world!.children])
+        if (child.type.includes('Light')) world!.remove(child);
       world!.background = null;
-      const exported = await new GLTFExporter().parseAsync(world!, { binary: true, onlyVisible: true });
+      const exported = await new GLTFExporter().parseAsync(world!, {
+        binary: true,
+        onlyVisible: true,
+      });
       if (!(exported instanceof ArrayBuffer)) throw new Error('GLB exporter returned text output');
       output = exported;
     }

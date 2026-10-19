@@ -670,13 +670,14 @@ test('orthographic and perspective cameras render the same house and preserve fr
     /Perspective/,
   );
   const beforeOrbit = ((await (await request.get('/api/state')).json()) as Scene).camera;
-  await page.mouse.move(canvasBox!.x + canvasBox!.width / 2, canvasBox!.y + canvasBox!.height / 2);
+  await canvas.evaluate((element) => element.scrollIntoView({ block: 'start' }));
+  const visibleCanvasBox = await canvas.boundingBox();
+  expect(visibleCanvasBox).not.toBeNull();
+  const dragX = visibleCanvasBox!.x + visibleCanvasBox!.width / 2;
+  const dragY = visibleCanvasBox!.y + Math.min(visibleCanvasBox!.height / 2, 250);
+  await page.mouse.move(dragX, dragY);
   await page.mouse.down();
-  await page.mouse.move(
-    canvasBox!.x + canvasBox!.width / 2 + 60,
-    canvasBox!.y + canvasBox!.height / 2 + 20,
-    { steps: 6 },
-  );
+  await page.mouse.move(dragX + 60, dragY + 20, { steps: 6 });
   await page.mouse.up();
   expect(((await (await request.get('/api/state')).json()) as Scene).camera).toEqual(beforeOrbit);
   await page.getByRole('button', { name: 'Use current view' }).click();
@@ -869,12 +870,26 @@ test('local asset previews import into the catalog and can be used through publi
   page,
   request,
 }) => {
+  const createdWorkspace = await request.post('/api/workspaces', {
+    data: { name: 'Asset preview test', goal: 'Import and render local assets' },
+  });
+  expect(createdWorkspace.status()).toBe(201);
+  const { workspace } = (await createdWorkspace.json()) as { workspace: { id: string } };
+  const scoped = `/api/workspaces/${workspace.id}`;
+  const scopedTool = async (name: string, args: unknown = {}) => {
+    const response = await request.post(`${scoped}/tools`, {
+      data: { tool: name, arguments: args },
+    });
+    const result = (await response.json()) as ToolResponse;
+    expect(result.success, JSON.stringify(result.error)).toBe(true);
+    return result;
+  };
   const errors: string[] = [];
   page.on('pageerror', (error) => errors.push(error.message));
   page.on('console', (message) => {
     if (message.type() === 'error') errors.push(message.text());
   });
-  await page.goto('/');
+  await page.goto(`/?workspace=${workspace.id}`);
   await expect(page.getByRole('heading', { name: 'A world in the making.' })).toBeVisible();
   const importer = page.getByRole('form', { name: 'Import a local asset' });
   const importOne = async (
@@ -913,16 +928,17 @@ test('local asset previews import into the catalog and can be used through publi
     else await expect(importer.getByAltText(`Preview of ${file.name}`)).toBeVisible();
   };
 
-  const revisionBeforeImport = ((await (await request.get('/api/state')).json()) as Scene).revision;
+  const revisionBeforeImport = ((await (await request.get(`${scoped}/state`)).json()) as Scene)
+    .revision;
   await importOne(
     { name: 'cedar-house.glb', mimeType: 'model/gltf-binary', buffer: tinyGlb() },
     'Cedar PNW house',
     ['house', 'pnw'],
     '3d',
   );
-  let found = await tool(request, 'search_assets', { query: 'pnw house', kind: 'model' });
+  let found = await scopedTool('search_assets', { query: 'pnw house', kind: 'model' });
   const house = (found.result as { id: string }[]).find((asset) => asset.id.startsWith('local:'))!;
-  const placed = await tool(request, 'create_object', {
+  const placed = await scopedTool('create_object', {
     name: 'Imported Cedar House',
     type: 'asset',
     assetId: house.id,
@@ -937,11 +953,11 @@ test('local asset previews import into the catalog and can be used through publi
     ['pnw'],
     '3d',
   );
-  found = await tool(request, 'search_assets', { query: 'overcast', kind: 'environment' });
+  found = await scopedTool('search_assets', { query: 'overcast', kind: 'environment' });
   const environment = (found.result as { id: string }[]).find((asset) =>
     asset.id.startsWith('local:'),
   )!;
-  await tool(request, 'set_lighting', { environmentAssetId: environment.id });
+  await scopedTool('set_lighting', { environmentAssetId: environment.id });
 
   await importOne(
     { name: 'cedar.png', mimeType: 'image/png', buffer: tinyPng() },
@@ -949,17 +965,17 @@ test('local asset previews import into the catalog and can be used through publi
     ['wood'],
     'image',
   );
-  found = await tool(request, 'search_assets', { query: 'cedar color', kind: 'material' });
+  found = await scopedTool('search_assets', { query: 'cedar color', kind: 'material' });
   const material = (found.result as { id: string }[]).find((asset) =>
     asset.id.startsWith('local:'),
   )!;
-  await tool(request, 'create_object', {
+  await scopedTool('create_object', {
     name: 'Cedar sample',
     type: 'box',
     position: [3, 0, 0],
     materialId: material.id,
   });
-  expect(((await (await request.get('/api/state')).json()) as Scene).revision).toBe(
+  expect(((await (await request.get(`${scoped}/state`)).json()) as Scene).revision).toBe(
     revisionBeforeImport + 3,
   );
   expect(errors).toEqual([]);

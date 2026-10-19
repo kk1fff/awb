@@ -96,8 +96,12 @@ export class SceneEngine {
           ambient: { ...this.state.lighting.ambient, ...(args.ambient as object) },
           directional: { ...this.state.lighting.directional, ...(args.directional as object) },
           backgroundMode: args.backgroundMode ?? this.state.lighting.backgroundMode,
-          ...(this.state.lighting.backgroundColor ? { backgroundColor: this.state.lighting.backgroundColor } : {}),
-          ...(this.state.lighting.environmentAssetId ? { environmentAssetId: this.state.lighting.environmentAssetId } : {}),
+          ...(this.state.lighting.backgroundColor
+            ? { backgroundColor: this.state.lighting.backgroundColor }
+            : {}),
+          ...(this.state.lighting.environmentAssetId
+            ? { environmentAssetId: this.state.lighting.environmentAssetId }
+            : {}),
         };
         if (args.backgroundColor !== undefined) {
           if (args.backgroundColor === null) delete lightingDraft.backgroundColor;

@@ -1,7 +1,13 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 
-function box(group: THREE.Group, size: [number, number, number], at: [number, number, number], material: THREE.Material, rotation: [number, number, number] = [0, 0, 0]) {
+function box(
+  group: THREE.Group,
+  size: [number, number, number],
+  at: [number, number, number],
+  material: THREE.Material,
+  rotation: [number, number, number] = [0, 0, 0],
+) {
   const mesh = new THREE.Mesh(new THREE.BoxGeometry(...size), material);
   mesh.position.set(...at);
   mesh.rotation.set(...rotation);
@@ -11,7 +17,12 @@ function box(group: THREE.Group, size: [number, number, number], at: [number, nu
   return mesh;
 }
 
-function sphere(group: THREE.Group, size: [number, number, number], at: [number, number, number], material: THREE.Material) {
+function sphere(
+  group: THREE.Group,
+  size: [number, number, number],
+  at: [number, number, number],
+  material: THREE.Material,
+) {
   const mesh = new THREE.Mesh(new THREE.SphereGeometry(0.5, 24, 16), material);
   mesh.scale.set(...size);
   mesh.position.set(...at);
@@ -30,7 +41,10 @@ function cylinderBetween(
   sides = 8,
 ) {
   const delta = to.clone().sub(from);
-  const mesh = new THREE.Mesh(new THREE.CylinderGeometry(radius * 0.72, radius, delta.length(), sides), material);
+  const mesh = new THREE.Mesh(
+    new THREE.CylinderGeometry(radius * 0.72, radius, delta.length(), sides),
+    material,
+  );
   mesh.position.copy(from).add(to).multiplyScalar(0.5);
   mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), delta.normalize());
   mesh.castShadow = true;
@@ -104,16 +118,27 @@ function canvasPattern(kind: string): THREE.CanvasTexture | undefined {
       ctx.fillRect(0, y + 4, 512, course - 7);
       for (let i = 0; i < (siding ? 28 : 45); i++) {
         const x = random() * 512;
-        ctx.strokeStyle = random() > 0.5 ? `rgba(47,31,21,${0.08 + random() * 0.12})` : `rgba(255,231,198,${0.08 + random() * 0.12})`;
+        ctx.strokeStyle =
+          random() > 0.5
+            ? `rgba(47,31,21,${0.08 + random() * 0.12})`
+            : `rgba(255,231,198,${0.08 + random() * 0.12})`;
         ctx.lineWidth = 0.5 + random() * (siding ? 1.2 : 2.2);
         ctx.beginPath();
         ctx.moveTo(x, y + 5);
-        ctx.bezierCurveTo(x - 14, y + course * 0.3, x + 18, y + course * 0.65, x + (random() - 0.5) * 18, y + course - 3);
+        ctx.bezierCurveTo(
+          x - 14,
+          y + course * 0.3,
+          x + 18,
+          y + course * 0.65,
+          x + (random() - 0.5) * 18,
+          y + course - 3,
+        );
         ctx.stroke();
       }
       if (!siding) {
         for (let i = 0; i < 4; i++) {
-          const x = random() * 512, yy = y + random() * course;
+          const x = random() * 512,
+            yy = y + random() * course;
           ctx.strokeStyle = `rgba(53,34,21,${0.12 + random() * 0.14})`;
           ctx.beginPath();
           ctx.ellipse(x, yy, 4 + random() * 8, 1.5 + random() * 3, random(), 0, Math.PI * 2);
@@ -171,12 +196,23 @@ function canvasPattern(kind: string): THREE.CanvasTexture | undefined {
     ctx.fillRect(0, 0, 512, 512);
     if (forestFloor) {
       for (let i = 0; i < 90; i++) {
-        const x = random() * 512, y = random() * 512;
+        const x = random() * 512,
+          y = random() * 512;
         const radius = 8 + random() * 34;
         const moss = random() > 0.4;
-        ctx.fillStyle = moss ? `rgba(73,103,58,${0.08 + random() * 0.16})` : `rgba(92,69,50,${0.07 + random() * 0.13})`;
+        ctx.fillStyle = moss
+          ? `rgba(73,103,58,${0.08 + random() * 0.16})`
+          : `rgba(92,69,50,${0.07 + random() * 0.13})`;
         ctx.beginPath();
-        ctx.ellipse(x, y, radius * (0.7 + random() * 0.8), radius * 0.4, random() * Math.PI, 0, Math.PI * 2);
+        ctx.ellipse(
+          x,
+          y,
+          radius * (0.7 + random() * 0.8),
+          radius * 0.4,
+          random() * Math.PI,
+          0,
+          Math.PI * 2,
+        );
         ctx.fill();
       }
     }
@@ -187,7 +223,13 @@ function canvasPattern(kind: string): THREE.CanvasTexture | undefined {
         ? `rgba(${shade - 25},${shade + 2},${shade - 38},${alpha})`
         : `rgba(${shade - 22},${shade + 2},${shade - 18},${alpha})`;
       ctx.beginPath();
-      ctx.arc(random() * 512, random() * 512, 0.6 + random() * (forestFloor ? 4.5 : 5), 0, Math.PI * 2);
+      ctx.arc(
+        random() * 512,
+        random() * 512,
+        0.6 + random() * (forestFloor ? 4.5 : 5),
+        0,
+        Math.PI * 2,
+      );
       ctx.fill();
     }
     if (forestFloor) {
@@ -237,7 +279,8 @@ export function buildBuiltinModel(id: string): THREE.Group {
   const group = new THREE.Group();
   const get = (id: string) => createSurfaceMaterial(id);
   if (id === 'builtin:pnw-craftsman-shell') {
-    const cedar = get('builtin:cedar-siding'), stone = get('builtin:basalt-stone');
+    const cedar = get('builtin:cedar-siding'),
+      stone = get('builtin:basalt-stone');
     const trim = get('builtin:painted-cream');
     box(group, [8, 3.5, 6], [0, -0.7, 0], cedar);
     box(group, [8, 0.55, 6.1], [0, -2.72, 0], stone);
@@ -278,7 +321,8 @@ export function buildBuiltinModel(id: string): THREE.Group {
       box(group, [3.1, 0.1, 0.06], [0, 1.38, faceZ], get('builtin:aged-timber'));
     }
   } else if (id === 'builtin:pnw-gable-roof') {
-    const roof = get('builtin:dark-shingles'), timber = get('builtin:aged-timber');
+    const roof = get('builtin:dark-shingles'),
+      timber = get('builtin:aged-timber');
     const slope = 0.51;
     const pitchFaces = [
       { x: -2.05, sign: 1 },
@@ -295,7 +339,11 @@ export function buildBuiltinModel(id: string): THREE.Group {
           const tile = box(
             group,
             [0.52, 0.035, 0.48],
-            [face.x + localX * Math.cos(slope), 0.15 + localX * Math.sin(face.sign * slope) + 0.13, localZ],
+            [
+              face.x + localX * Math.cos(slope),
+              0.15 + localX * Math.sin(face.sign * slope) + 0.13,
+              localZ,
+            ],
             shingle,
             [0, 0, face.sign * slope],
           );
@@ -309,11 +357,17 @@ export function buildBuiltinModel(id: string): THREE.Group {
     box(group, [0.12, 0.18, 6.84], [4.24, -0.96, 0], timber, [0, 0, slope]);
     for (const side of [-1, 1]) {
       for (let z = -3.1; z <= 3.11; z += 0.78) {
-        box(group, [0.12, 0.35, 0.12], [side * 4.08, -1.0, z], timber, [0, 0, side < 0 ? -slope : slope]);
+        box(group, [0.12, 0.35, 0.12], [side * 4.08, -1.0, z], timber, [
+          0,
+          0,
+          side < 0 ? -slope : slope,
+        ]);
       }
     }
   } else if (id === 'builtin:pnw-porch') {
-    const timber = get('builtin:aged-timber'), stone = get('builtin:basalt-stone'), cream = get('builtin:painted-cream');
+    const timber = get('builtin:aged-timber'),
+      stone = get('builtin:basalt-stone'),
+      cream = get('builtin:painted-cream');
     box(group, [4.5, 0.28, 1.85], [0, -1.15, -0.7], timber);
     box(group, [4.55, 0.18, 2.22], [0, 1.82, -0.72], get('builtin:dark-shingles'), [0.16, 0, 0]);
     box(group, [4.55, 0.16, 0.18], [0, 1.78, -0.55], timber);
@@ -326,11 +380,15 @@ export function buildBuiltinModel(id: string): THREE.Group {
         brace.rotation.z = side * 0.65;
       }
     }
-    for (let i = 1; i <= 3; i++) box(group, [4.4, 0.16, 0.32], [0, -1.34 - i * 0.18, -0.9 - i * 0.28], stone);
+    for (let i = 1; i <= 3; i++)
+      box(group, [4.4, 0.16, 0.32], [0, -1.34 - i * 0.18, -0.9 - i * 0.28], stone);
     box(group, [4.5, 0.18, 0.12], [0, -0.05, -1.48], timber);
-    for (let x = -2.0; x <= 2.01; x += 0.4) box(group, [0.06, 0.75, 0.06], [x, -0.48, -1.48], cream);
+    for (let x = -2.0; x <= 2.01; x += 0.4)
+      box(group, [0.06, 0.75, 0.06], [x, -0.48, -1.48], cream);
   } else if (id === 'builtin:pnw-window') {
-    const timber = get('builtin:aged-timber'), glass = get('builtin:window-glass'), cream = get('builtin:painted-cream');
+    const timber = get('builtin:aged-timber'),
+      glass = get('builtin:window-glass'),
+      cream = get('builtin:painted-cream');
     box(group, [1.28, 1.64, 0.12], [0, 0, 0], timber);
     box(group, [1.08, 1.42, 0.035], [0, 0.02, 0.045], glass);
     for (const x of [-0.61, 0.61]) box(group, [0.1, 1.74, 0.1], [x, 0, 0.005], cream);
@@ -341,7 +399,9 @@ export function buildBuiltinModel(id: string): THREE.Group {
     box(group, [1.4, 0.12, 0.18], [0, -0.83, 0], timber);
     box(group, [1.36, 0.08, 0.12], [0, 0.86, -0.005], cream);
   } else if (id === 'builtin:pnw-front-door') {
-    const timber = get('builtin:aged-timber'), glass = get('builtin:window-glass'), cream = get('builtin:painted-cream');
+    const timber = get('builtin:aged-timber'),
+      glass = get('builtin:window-glass'),
+      cream = get('builtin:painted-cream');
     box(group, [1.16, 2.1, 0.12], [0, 0, 0], timber);
     box(group, [0.72, 0.76, 0.035], [0, 0.5, 0.05], glass);
     box(group, [0.8, 0.06, 0.018], [0, 0.5, 0.068], cream);
@@ -353,17 +413,22 @@ export function buildBuiltinModel(id: string): THREE.Group {
     box(group, [1.18, 0.08, 0.14], [0, 1.08, 0], cream);
     sphere(group, [0.065, 0.065, 0.065], [0.42, -0.02, 0.05], cream);
   } else if (id === 'builtin:pnw-evergreen') {
-    const timber = get('builtin:aged-timber'), foliage = get('builtin:forest-canopy');
+    const timber = get('builtin:aged-timber'),
+      foliage = get('builtin:forest-canopy');
     const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.35, 9, 12), timber);
     trunk.position.y = 0;
     trunk.castShadow = true;
     group.add(trunk);
     const random = (() => {
       let seed = 0x51f15e;
-      return () => { seed = (1664525 * seed + 1013904223) >>> 0; return seed / 0xffffffff; };
+      return () => {
+        seed = (1664525 * seed + 1013904223) >>> 0;
+        return seed / 0xffffffff;
+      };
     })();
-    const greens = ['#526d48', '#60784d', '#456443', '#718151', '#3f5b3e']
-      .map((color) => tinted(foliage, color));
+    const greens = ['#526d48', '#60784d', '#456443', '#718151', '#3f5b3e'].map((color) =>
+      tinted(foliage, color),
+    );
     for (let tier = 0; tier < 7; tier++) {
       const y = -3.25 + tier * 1.18;
       const radius = 1.68 - tier * 0.205;
@@ -375,7 +440,10 @@ export function buildBuiltinModel(id: string): THREE.Group {
         const start = new THREE.Vector3(Math.cos(angle) * 0.12, y, Math.sin(angle) * 0.12);
         const end = new THREE.Vector3(Math.cos(angle) * length, y + rise, Math.sin(angle) * length);
         cylinderBetween(group, start, end, 0.055 - tier * 0.003, timber, 6);
-        const cluster = new THREE.Mesh(new THREE.SphereGeometry(0.5, 10, 7), greens[(tier + branch) % greens.length]!);
+        const cluster = new THREE.Mesh(
+          new THREE.SphereGeometry(0.5, 10, 7),
+          greens[(tier + branch) % greens.length]!,
+        );
         cluster.position.copy(start).lerp(end, 0.73);
         cluster.scale.set(length * 0.62, 0.23 + random() * 0.08, 0.25 + random() * 0.08);
         cluster.rotation.y = -angle;
@@ -384,7 +452,10 @@ export function buildBuiltinModel(id: string): THREE.Group {
         cluster.castShadow = cluster.receiveShadow = true;
         group.add(cluster);
       }
-      const crown = new THREE.Mesh(new THREE.ConeGeometry(radius * 0.52, 1.2, 9), greens[tier % greens.length]!);
+      const crown = new THREE.Mesh(
+        new THREE.ConeGeometry(radius * 0.52, 1.2, 9),
+        greens[tier % greens.length]!,
+      );
       crown.position.set((random() - 0.5) * 0.18, y + 0.05, (random() - 0.5) * 0.18);
       crown.castShadow = crown.receiveShadow = true;
       group.add(crown);
@@ -402,9 +473,17 @@ export function buildBuiltinModel(id: string): THREE.Group {
       group.add(leaf);
     }
   } else if (id === 'builtin:pnw-stone-path') {
-    const stone = get('builtin:basalt-stone'), cream = get('builtin:painted-cream');
-    const positions: [number, number, number][] = [[-0.75, 0, -0.25], [-0.25, 0.02, 0.25], [0.3, 0, -0.3], [0.8, 0.01, 0.24]];
-    positions.forEach(([x, y, z], i) => sphere(group, [0.58, 0.14, 0.48], [x, y, z], i % 2 ? stone.clone() : cream.clone()));
+    const stone = get('builtin:basalt-stone'),
+      cream = get('builtin:painted-cream');
+    const positions: [number, number, number][] = [
+      [-0.75, 0, -0.25],
+      [-0.25, 0.02, 0.25],
+      [0.3, 0, -0.3],
+      [0.8, 0.01, 0.24],
+    ];
+    positions.forEach(([x, y, z], i) =>
+      sphere(group, [0.58, 0.14, 0.48], [x, y, z], i % 2 ? stone.clone() : cream.clone()),
+    );
   } else if (id === 'builtin:pnw-boulder') {
     const stone = get('builtin:basalt-stone');
     sphere(group, [1.35, 0.84, 1.15], [0, 0, 0], stone);

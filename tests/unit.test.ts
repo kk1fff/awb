@@ -49,7 +49,11 @@ describe('scene command invariants', () => {
     delete (legacy.camera as Partial<typeof legacy.camera>).fov;
     const legacyCamera = structuredClone(legacy.camera);
     engine.load(legacy);
-    expect(engine.snapshot().camera).toEqual({ ...legacyCamera, projection: 'orthographic', fov: 38 });
+    expect(engine.snapshot().camera).toEqual({
+      ...legacyCamera,
+      projection: 'orthographic',
+      fov: 38,
+    });
 
     const before = engine.snapshot().camera;
     engine.execute('set_camera', { projection: 'perspective' });
@@ -71,15 +75,25 @@ describe('scene command invariants', () => {
   });
   it('migrates saved version 1 primitive scenes without changing IDs or appearance', () => {
     const engine = new SceneEngine();
-    const object = engine.execute('create_object', { name: 'Old tree', type: 'cone' }) as SceneObject;
-    const version1 = JSON.parse(JSON.stringify({
-      ...engine.snapshot(),
-      schemaVersion: 1,
-      objects: [{ ...object, roughness: undefined, metalness: undefined }],
-    }));
+    const object = engine.execute('create_object', {
+      name: 'Old tree',
+      type: 'cone',
+    }) as SceneObject;
+    const version1 = JSON.parse(
+      JSON.stringify({
+        ...engine.snapshot(),
+        schemaVersion: 1,
+        objects: [{ ...object, roughness: undefined, metalness: undefined }],
+      }),
+    );
     engine.load(version1);
     expect(engine.snapshot().schemaVersion).toBe(2);
-    expect(engine.snapshot().objects[0]).toMatchObject({ id: object.id, type: 'cone', roughness: 0.86, metalness: 0 });
+    expect(engine.snapshot().objects[0]).toMatchObject({
+      id: object.id,
+      type: 'cone',
+      roughness: 0.86,
+      metalness: 0,
+    });
   });
   it('rejects unknown fields, invalid dimensions, nonfinite transforms and malformed colors', () => {
     for (const patch of [
