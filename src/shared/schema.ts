@@ -9,8 +9,22 @@ const positiveVector = z.tuple([
 export const color = z
   .string()
   .regex(/^#[\da-fA-F]{6}$/, 'Use a six-digit hex color, e.g. #795548');
-export const primitive = z.enum(['box', 'sphere', 'cylinder', 'cone', 'plane']);
+export const primitive = z.enum(['box', 'sphere', 'cylinder', 'cone', 'plane', 'lathe', 'mirror']);
 export const objectType = primitive.or(z.literal('asset'));
+export const latheProfile = z
+  .array(z.tuple([z.number().finite().min(0).max(0.5), z.number().finite().min(-0.5).max(0.5)]))
+  .min(3)
+  .max(64)
+  .refine(
+    (points) =>
+      points[0][0] === 0 &&
+      points[0][1] === -0.5 &&
+      points[points.length - 1][0] === 0 &&
+      points[points.length - 1][1] === 0.5 &&
+      points.some(([radius]) => radius > 0) &&
+      points.every((point, index) => index === 0 || point[1] > points[index - 1][1]),
+    'Start at [0,-0.5], end at [0,0.5], include a nonzero radius, and increase y at every point',
+  );
 export const assetId = z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9:_-]{1,119}$/);
 export const assetKind = z.enum(['model', 'material', 'environment']);
 export const assetSearchSchema = z
@@ -50,6 +64,17 @@ const properties = z
     roughness: z.number().min(0).max(1).optional(),
     metalness: z.number().min(0).max(1).optional(),
     materialId: assetId.optional(),
+    materialOverrides: z
+      .object({
+        color: color.optional(),
+        roughness: z.number().min(0).max(1).optional(),
+        metalness: z.number().min(0).max(1).optional(),
+        anisotropy: z.number().min(0).max(1).optional(),
+      })
+      .strict()
+      .optional(),
+    profile: latheProfile.optional(),
+    reflectionStrength: z.number().finite().min(0).max(1).optional(),
     visible: z.boolean(),
   })
   .strict();
@@ -62,6 +87,42 @@ export const objectSchema = properties
   })
   .strict()
   .superRefine((object, ctx) => {
+    if (object.type === 'lathe' && !object.profile)
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Lathe objects require a profile',
+        path: ['profile'],
+      });
+    if (object.type !== 'lathe' && object.profile)
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Only lathe objects may specify a profile',
+        path: ['profile'],
+      });
+    if (object.type !== 'mirror' && object.reflectionStrength !== undefined)
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Only mirror objects may set reflectionStrength',
+        path: ['reflectionStrength'],
+      });
+    if (
+      object.type === 'mirror' &&
+      (object.materialId ||
+        object.roughness !== undefined ||
+        object.metalness !== undefined ||
+        object.materialOverrides)
+    )
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Mirror objects use only color; material and PBR fields are unsupported',
+        path: ['materialId'],
+      });
+    if (object.materialOverrides && !object.materialId)
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Material overrides require materialId',
+        path: ['materialOverrides'],
+      });
     if (object.type === 'asset' && !object.assetId)
       ctx.addIssue({ code: 'custom', message: 'Asset objects require assetId', path: ['assetId'] });
     if (object.type === 'asset' && !object.assetBounds)
@@ -101,6 +162,7 @@ export const lightingSchema = z
     ambient,
     directional,
     environmentAssetId: assetId.optional(),
+    environmentIntensity: z.number().finite().min(0).max(4).default(0.55),
     backgroundMode: z.enum(['solid', 'environment']).default('solid'),
     backgroundColor: color.optional(),
   })
@@ -116,6 +178,10 @@ export const sceneSchema = z
   .strict()
   .refine((s) => new Set(s.objects.map((o) => o.id)).size === s.objects.length, {
     message: 'Object IDs must be unique',
+    path: ['objects'],
+  })
+  .refine((s) => s.objects.filter((o) => o.type === 'mirror').length <= 1, {
+    message: 'Only one live mirror is supported per scene',
     path: ['objects'],
   });
 const saveName = z
@@ -151,6 +217,42 @@ export const toolSchemas = {
     .extend({ name: properties.shape.name, type: objectType, assetId: assetId.optional() })
     .strict()
     .superRefine((object, ctx) => {
+      if (object.type === 'lathe' && !object.profile)
+        ctx.addIssue({
+          code: 'custom',
+          message: 'Lathe objects require a profile',
+          path: ['profile'],
+        });
+      if (object.type !== 'lathe' && object.profile)
+        ctx.addIssue({
+          code: 'custom',
+          message: 'Only lathe objects may specify a profile',
+          path: ['profile'],
+        });
+      if (object.type !== 'mirror' && object.reflectionStrength !== undefined)
+        ctx.addIssue({
+          code: 'custom',
+          message: 'Only mirror objects may set reflectionStrength',
+          path: ['reflectionStrength'],
+        });
+      if (
+        object.type === 'mirror' &&
+        (object.materialId ||
+          object.roughness !== undefined ||
+          object.metalness !== undefined ||
+          object.materialOverrides)
+      )
+        ctx.addIssue({
+          code: 'custom',
+          message: 'Mirror objects use only color; material and PBR fields are unsupported',
+          path: ['materialId'],
+        });
+      if (object.materialOverrides && !object.materialId)
+        ctx.addIssue({
+          code: 'custom',
+          message: 'Material overrides require materialId',
+          path: ['materialOverrides'],
+        });
       if (object.type === 'asset' && !object.assetId)
         ctx.addIssue({
           code: 'custom',
@@ -186,6 +288,7 @@ export const toolSchemas = {
         .extend({ shadowSoftness: z.number().min(0).max(4).optional() })
         .optional(),
       environmentAssetId: assetId.nullable().optional(),
+      environmentIntensity: z.number().finite().min(0).max(4).optional(),
       backgroundMode: z.enum(['solid', 'environment']).optional(),
       backgroundColor: color.nullable().optional(),
     })
@@ -305,6 +408,7 @@ export function emptyScene(): Scene {
     lighting: {
       ambient: { color: '#ffffff', intensity: 1.5 },
       directional: { color: '#fff4dc', intensity: 3, position: [8, 14, 5], shadowSoftness: 0 },
+      environmentIntensity: 0.55,
       backgroundMode: 'solid',
     },
   };

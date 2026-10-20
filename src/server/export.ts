@@ -154,7 +154,7 @@ export async function exportScene(
       expectedBytes = (await stat(temporary)).size;
     } else {
       ensureFileReader();
-      world = await buildWorld(scene);
+      world = await buildWorld(scene, undefined, { forExport: true });
       for (const child of [...world.children])
         if (child.type.includes('Light')) world.remove(child);
       world.background = null;

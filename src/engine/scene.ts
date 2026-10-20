@@ -3,11 +3,23 @@ import {
   cameraSchema,
   emptyScene,
   lightingSchema,
+  objectSchema,
   migrateScene,
   sceneSchema,
   type Scene,
-  type SceneObject,
 } from '../shared/schema.js';
+
+function explicitMaterialOverrides(
+  patch: Record<string, unknown>,
+  existing?: Record<string, unknown>,
+): Record<string, unknown> | undefined {
+  const direct: Record<string, unknown> = {};
+  for (const field of ['color', 'roughness', 'metalness'])
+    if (Object.hasOwn(patch, field)) direct[field] = patch[field];
+  const nested = patch.materialOverrides as Record<string, unknown> | undefined;
+  if (!Object.keys(direct).length && !nested) return existing;
+  return { ...existing, ...direct, ...nested };
+}
 
 export class ToolError extends Error {
   constructor(
@@ -57,17 +69,26 @@ export class SceneEngine {
       case 'inspect_object':
         return structuredClone(find());
       case 'create_object': {
-        const object = {
+        if (args.type === 'mirror' && this.state.objects.some((item) => item.type === 'mirror'))
+          throw new ToolError('MIRROR_LIMIT', 'Only one live mirror is supported per scene.');
+        const materialOverrides = args.materialId
+          ? explicitMaterialOverrides(args)
+          : args.materialOverrides;
+        const object = objectSchema.parse({
           position: [0, 0, 0],
           rotation: [0, 0, 0],
           dimensions: [1, 1, 1],
           scale: [1, 1, 1],
-          color: args.type === 'asset' ? '#ffffff' : '#7a9d82',
+          color: args.type === 'asset' ? '#ffffff' : args.type === 'mirror' ? '#242a30' : '#7a9d82',
           visible: true,
-          ...(args.type === 'asset' ? {} : { roughness: 0.86, metalness: 0 }),
+          ...(args.type === 'mirror' ? { reflectionStrength: 0.78 } : {}),
+          ...(args.type === 'asset' || args.type === 'mirror'
+            ? {}
+            : { roughness: 0.86, metalness: 0 }),
           ...args,
+          ...(materialOverrides ? { materialOverrides } : {}),
           id: randomUUID(),
-        } as SceneObject;
+        });
         this.state.objects.push(object);
         result = object;
         break;
@@ -75,8 +96,17 @@ export class SceneEngine {
       case 'update_object': {
         const object = find();
         const { id: _id, ...patch } = args;
-        Object.assign(object, patch);
-        result = object;
+        const materialId = patch.materialId ?? object.materialId;
+        const materialOverrides = materialId
+          ? explicitMaterialOverrides(patch, object.materialOverrides)
+          : patch.materialOverrides;
+        const updated = objectSchema.parse({
+          ...object,
+          ...patch,
+          ...(materialOverrides ? { materialOverrides } : {}),
+        });
+        Object.assign(object, updated);
+        result = updated;
         break;
       }
       case 'delete_object': {
@@ -96,6 +126,8 @@ export class SceneEngine {
           ambient: { ...this.state.lighting.ambient, ...(args.ambient as object) },
           directional: { ...this.state.lighting.directional, ...(args.directional as object) },
           backgroundMode: args.backgroundMode ?? this.state.lighting.backgroundMode,
+          environmentIntensity:
+            args.environmentIntensity ?? this.state.lighting.environmentIntensity,
           ...(this.state.lighting.backgroundColor
             ? { backgroundColor: this.state.lighting.backgroundColor }
             : {}),

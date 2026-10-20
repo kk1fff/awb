@@ -11,6 +11,7 @@ import type {
   SceneExport,
   AssetRecord,
 } from '../shared/schema.js';
+import { latheProfile } from '../shared/schema.js';
 import { Viewport } from './Viewport.js';
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
@@ -28,6 +29,8 @@ const glyph: Record<SceneObject['type'], string> = {
   cylinder: '▥',
   cone: '△',
   plane: '▱',
+  lathe: '◍',
+  mirror: '▰',
   asset: '⌂',
 };
 const pretty = (value: unknown) => JSON.stringify(value, null, 2);
@@ -755,13 +758,44 @@ export function App() {
                   void command('create_object', {
                     name: `${e.target.value}_${(scene?.objects.length ?? 0) + 1}`,
                     type: e.target.value,
+                    ...(e.target.value === 'lathe'
+                      ? {
+                          profile: [
+                            [0, -0.5],
+                            [0.38, -0.499],
+                            [0.5, -0.35],
+                            [0.5, 0.2],
+                            [0.3, 0.45],
+                            [0.3, 0.499],
+                            [0, 0.5],
+                          ],
+                        }
+                      : {}),
+                    ...(e.target.value === 'mirror'
+                      ? {
+                          dimensions: [6, 6, 1],
+                          rotation: [-Math.PI / 2, 0, 0],
+                          color: '#242a30',
+                          reflectionStrength: 0.78,
+                        }
+                      : {}),
                   });
               }}
             >
               <option value="">＋ Choose geometry</option>
-              {(['box', 'sphere', 'cylinder', 'cone', 'plane'] as const).map((type) => (
-                <option key={type}>{type}</option>
-              ))}
+              {(['box', 'sphere', 'cylinder', 'cone', 'plane', 'lathe', 'mirror'] as const).map(
+                (type) => (
+                  <option
+                    key={type}
+                    disabled={
+                      type === 'mirror' &&
+                      Boolean(scene?.objects.some((item) => item.type === 'mirror'))
+                    }
+                  >
+                    {type}
+                  </option>
+                ),
+              )}
             </select>
           </div>
           <form
@@ -987,6 +1021,26 @@ export function App() {
                     onBlur={commitCameraFov}
                   />
                   <output>{scene.camera.fov}°</output>
+                </label>
+              )}
+              {scene?.lighting.environmentAssetId && (
+                <label className="camera-fov">
+                  <span>REFLECTION LIGHT</span>
+                  <input
+                    aria-label="Environment intensity"
+                    type="number"
+                    min="0"
+                    max="4"
+                    step="0.05"
+                    value={scene.lighting.environmentIntensity}
+                    disabled={busy}
+                    onChange={(event) => {
+                      if (Number.isFinite(event.target.valueAsNumber))
+                        void command('set_lighting', {
+                          environmentIntensity: event.target.valueAsNumber,
+                        });
+                    }}
+                  />
                 </label>
               )}
               <span className="toolbar-separator">/</span> Y UP
@@ -1328,36 +1382,31 @@ function ObjectEditor({
   onDelete: () => Promise<unknown>;
 }) {
   const [draft, setDraft] = useState(object);
+  const [profileText, setProfileText] = useState(JSON.stringify(object.profile ?? [], null, 2));
+  const [profileError, setProfileError] = useState('');
   return (
     <form
       onSubmit={(event) => {
         event.preventDefault();
-        const {
-          id,
-          name,
-          position,
-          rotation,
-          scale,
-          dimensions,
-          color,
-          visible,
-          roughness,
-          metalness,
-          materialId,
-        } = draft;
-        void onSave({
-          id,
-          name,
-          position,
-          rotation,
-          scale,
-          dimensions,
-          color,
-          visible,
-          roughness,
-          metalness,
-          materialId,
-        });
+        const patch: Record<string, unknown> = { id: draft.id };
+        for (const field of [
+          'name',
+          'position',
+          'rotation',
+          'scale',
+          'dimensions',
+          'color',
+          'visible',
+          'roughness',
+          'metalness',
+          'materialId',
+          'materialOverrides',
+          'profile',
+          'reflectionStrength',
+        ] as const)
+          if (JSON.stringify(draft[field]) !== JSON.stringify(object[field]))
+            patch[field] = draft[field];
+        if (Object.keys(patch).length > 1) void onSave(patch);
       }}
     >
       <label>
@@ -1398,6 +1447,32 @@ function ObjectEditor({
           </div>
         </fieldset>
       ))}
+      {object.type === 'lathe' && (
+        <label>
+          Lathe profile [radius, y] in normalized units
+          <textarea
+            aria-label="Lathe profile"
+            rows={8}
+            value={profileText}
+            onChange={(event) => {
+              const value = event.target.value;
+              setProfileText(value);
+              try {
+                const parsed = latheProfile.safeParse(JSON.parse(value));
+                if (!parsed.success) {
+                  setProfileError(parsed.error.issues[0]?.message ?? 'Invalid profile');
+                } else {
+                  setProfileError('');
+                  setDraft((current) => ({ ...current, profile: parsed.data }));
+                }
+              } catch {
+                setProfileError('Enter a JSON array of [radius, y] pairs.');
+              }
+            }}
+          />
+          {profileError && <small role="alert">{profileError}</small>}
+        </label>
+      )}
       <div className="material-row">
         <label>
           Color
@@ -1416,46 +1491,107 @@ function ObjectEditor({
           Visible
         </label>
       </div>
-      <div className="material-row">
+      {draft.materialId && object.type !== 'mirror' && (
+        <fieldset>
+          <legend>Material preset overrides</legend>
+          <label>
+            Color
+            <input
+              aria-label="Material override color"
+              type="color"
+              value={draft.materialOverrides?.color ?? '#ffffff'}
+              onChange={(event) =>
+                setDraft({
+                  ...draft,
+                  materialOverrides: { ...draft.materialOverrides, color: event.target.value },
+                })
+              }
+            />
+          </label>
+          {(['roughness', 'metalness', 'anisotropy'] as const).map((property) => (
+            <label key={property}>
+              {property}
+              <input
+                aria-label={`Material override ${property}`}
+                type="number"
+                min="0"
+                max="1"
+                step="0.01"
+                placeholder="preset value"
+                value={draft.materialOverrides?.[property] ?? ''}
+                onChange={(event) =>
+                  setDraft({
+                    ...draft,
+                    materialOverrides: {
+                      ...draft.materialOverrides,
+                      [property]:
+                        event.target.value === '' ? undefined : event.target.valueAsNumber,
+                    },
+                  })
+                }
+              />
+            </label>
+          ))}
+        </fieldset>
+      )}
+      {object.type === 'mirror' && (
         <label>
-          Roughness
+          Reflection strength
           <input
+            aria-label="Reflection strength"
             type="number"
             min="0"
             max="1"
             step="0.01"
-            aria-label="Roughness"
-            placeholder="asset default"
-            value={draft.roughness ?? ''}
-            onChange={(e) =>
-              setDraft({
-                ...draft,
-                roughness: e.target.value === '' ? undefined : e.target.valueAsNumber,
-              })
+            value={draft.reflectionStrength ?? 0.78}
+            onChange={(event) =>
+              setDraft({ ...draft, reflectionStrength: event.target.valueAsNumber })
             }
           />
         </label>
-        <label>
-          Metalness
-          <input
-            type="number"
-            min="0"
-            max="1"
-            step="0.01"
-            aria-label="Metalness"
-            placeholder="asset default"
-            value={draft.metalness ?? ''}
-            onChange={(e) =>
-              setDraft({
-                ...draft,
-                metalness: e.target.value === '' ? undefined : e.target.valueAsNumber,
-              })
-            }
-          />
-        </label>
-      </div>
+      )}
+      {object.type !== 'mirror' && (
+        <div className="material-row">
+          <label>
+            Roughness
+            <input
+              type="number"
+              min="0"
+              max="1"
+              step="0.01"
+              aria-label="Roughness"
+              placeholder="asset default"
+              value={draft.roughness ?? ''}
+              onChange={(e) =>
+                setDraft({
+                  ...draft,
+                  roughness: e.target.value === '' ? undefined : e.target.valueAsNumber,
+                })
+              }
+            />
+          </label>
+          <label>
+            Metalness
+            <input
+              type="number"
+              min="0"
+              max="1"
+              step="0.01"
+              aria-label="Metalness"
+              placeholder="asset default"
+              value={draft.metalness ?? ''}
+              onChange={(e) =>
+                setDraft({
+                  ...draft,
+                  metalness: e.target.value === '' ? undefined : e.target.valueAsNumber,
+                })
+              }
+            />
+          </label>
+        </div>
+      )}
       <div className="property-actions">
-        <button disabled={busy}>Apply changes</button>
+        <button disabled={busy || Boolean(profileError)}>Apply changes</button>
         <button
           type="button"
           className="danger-button"

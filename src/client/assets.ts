@@ -254,6 +254,19 @@ function canvasPattern(kind: string): THREE.CanvasTexture | undefined {
 }
 
 export function createSurfaceMaterial(id: string): THREE.MeshStandardMaterial {
+  if (id === 'builtin:steel-polished')
+    return new THREE.MeshPhysicalMaterial({ color: '#d9dde0', roughness: 0.055, metalness: 1 });
+  if (id === 'builtin:steel-brushed') {
+    const material = new THREE.MeshPhysicalMaterial({
+      color: '#c4c9cc',
+      roughness: 0.24,
+      metalness: 1,
+      anisotropy: 0.65,
+    });
+    material.normalMap = brushedSteelNormalMap();
+    material.normalScale.set(0.7, 0.08);
+    return material;
+  }
   const table: Record<string, [string, number, number]> = {
     'builtin:cedar-siding': ['#ad9275', 0.88, 0],
     'builtin:dark-shingles': ['#626766', 0.92, 0],
@@ -265,7 +278,7 @@ export function createSurfaceMaterial(id: string): THREE.MeshStandardMaterial {
     'builtin:painted-cream': ['#ded4c1', 0.82, 0],
   };
   const [color, roughness, metalness] = table[id] ?? ['#7a9d82', 0.86, 0];
-  const material = new THREE.MeshStandardMaterial({ color, roughness, metalness });
+  const material = new THREE.MeshPhysicalMaterial({ color, roughness, metalness });
   material.map = canvasPattern(id) ?? null;
   if (id === 'builtin:window-glass') {
     material.transparent = true;
@@ -273,6 +286,47 @@ export function createSurfaceMaterial(id: string): THREE.MeshStandardMaterial {
     material.side = THREE.DoubleSide;
   }
   return material;
+}
+
+function brushedSteelNormalMap(): THREE.DataTexture {
+  // Lathe UVs run around the circumference on X and along the bottle on Y.
+  // Stable column grain gives the brushed finish fine vertical hairlines.
+  const width = 256;
+  const height = 128;
+  const grain = new Float32Array(width);
+  let seed = 0x51ea1;
+  const random = () => {
+    seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+    return seed / 0x1_0000_0000;
+  };
+  for (let x = 0; x < width; x++) {
+    const fine = (random() - 0.5) * 20;
+    const scratch = random() < 0.035 ? (random() < 0.5 ? -36 : 24) : 0;
+    grain[x] = fine + scratch;
+  }
+  const data = new Uint8Array(width * height * 4);
+  const clampByte = (value: number) => Math.max(0, Math.min(255, Math.round(value)));
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const left = grain[(x + width - 1) % width]!;
+      const right = grain[(x + 1) % width]!;
+      const up = Math.sin(((y + height - 1) / height) * Math.PI * 2 + x * 0.17) * 1.4;
+      const down = Math.sin(((y + 1) / height) * Math.PI * 2 + x * 0.17) * 1.4;
+      const nx = clampByte(128 - (right - left) * 0.34);
+      const ny = clampByte(128 - (down - up) * 0.34);
+      const offset = (y * width + x) * 4;
+      data[offset] = nx;
+      data[offset + 1] = ny;
+      data[offset + 2] = 255;
+      data[offset + 3] = 255;
+    }
+  }
+  const texture = new THREE.DataTexture(data, width, height, THREE.RGBAFormat);
+  texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
+  texture.anisotropy = 4;
+  texture.colorSpace = THREE.NoColorSpace;
+  texture.needsUpdate = true;
+  return texture;
 }
 
 export function buildBuiltinModel(id: string): THREE.Group {
@@ -511,6 +565,37 @@ export function buildOvercastEnvironment(): THREE.DataTexture {
     }
   }
   const texture = new THREE.DataTexture(pixels, width, height, THREE.RGBAFormat);
+  texture.mapping = THREE.EquirectangularReflectionMapping;
+  texture.colorSpace = THREE.LinearSRGBColorSpace;
+  texture.needsUpdate = true;
+  return texture;
+}
+
+export function buildStudioEnvironment(): THREE.DataTexture {
+  const width = 512;
+  const height = 256;
+  const pixels = new Float32Array(width * height * 4);
+  const gaussian = (coordinate: number, center: number, spread: number) => {
+    const distance = (coordinate - center) / spread;
+    return Math.exp(-0.5 * distance * distance);
+  };
+  for (let y = 0; y < height; y++) {
+    const v = y / height;
+    for (let x = 0; x < width; x++) {
+      const u = x / width;
+      const tall = gaussian(u, 0.16, 0.052) * gaussian(v, 0.45, 0.32);
+      const narrow = gaussian(u, 0.47, 0.018) * gaussian(v, 0.46, 0.3);
+      const side = gaussian(u, 0.78, 0.065) * gaussian(v, 0.44, 0.32);
+      const top = gaussian(u, 0.56, 0.22) * gaussian(v, 0.11, 0.09);
+      const value = 0.055 + tall * 1.35 + narrow * 1.9 + side * 0.95 + top * 0.65;
+      const index = (y * width + x) * 4;
+      pixels[index] = value;
+      pixels[index + 1] = value * 0.985;
+      pixels[index + 2] = value * 0.965;
+      pixels[index + 3] = 1;
+    }
+  }
+  const texture = new THREE.DataTexture(pixels, width, height, THREE.RGBAFormat, THREE.FloatType);
   texture.mapping = THREE.EquirectangularReflectionMapping;
   texture.colorSpace = THREE.LinearSRGBColorSpace;
   texture.needsUpdate = true;

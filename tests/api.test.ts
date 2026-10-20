@@ -527,6 +527,76 @@ describe('public tool API', () => {
     expect((await call('surprise')).error?.code).toBe('UNKNOWN_TOOL');
     expect((await call('toString')).error?.code).toBe('UNKNOWN_TOOL');
   });
+  it('creates native bottle geometry and a single mirror, exports a PBR fallback, and reloads controls', async () => {
+    const profile = [
+      [0, -0.5],
+      [0.48, -0.49],
+      [0.5, 0.15],
+      [0.24, 0.48],
+      [0, 0.5],
+    ];
+    const body = await call('create_object', {
+      name: 'Bottle body',
+      type: 'lathe',
+      profile,
+      materialId: 'builtin:steel-brushed',
+      metalness: 1,
+      roughness: 0.15,
+    });
+    expect(body.success).toBe(true);
+    expect(body.sceneRevision).toBe(1);
+    const mirror = await call('create_object', {
+      name: 'Tabletop',
+      type: 'mirror',
+      dimensions: [6, 6, 1],
+      rotation: [-Math.PI / 2, 0, 0],
+      reflectionStrength: 0.72,
+    });
+    expect(mirror.success).toBe(true);
+    expect(mirror.sceneRevision).toBe(2);
+    expect((mirror.result as SceneObject).reflectionStrength).toBe(0.72);
+    const rejected = await call('create_object', { name: 'Duplicate mirror', type: 'mirror' });
+    expect(rejected.success).toBe(false);
+    expect(rejected.error?.code).toBe('MIRROR_LIMIT');
+    expect(rejected.sceneRevision).toBe(2);
+    const badProfile = await call('update_object', {
+      id: (body.result as SceneObject).id,
+      profile: [
+        [0, -0.5],
+        [0.5, 0.3],
+        [0.2, 0.2],
+        [0, 0.5],
+      ],
+    });
+    expect(badProfile.error?.code).toBe('VALIDATION_ERROR');
+    expect(badProfile.sceneRevision).toBe(2);
+    const studio = await call('search_assets', { query: 'studio softboxes', kind: 'environment' });
+    expect(
+      (studio.result as { id: string }[]).some((item) => item.id === 'builtin:studio-softboxes'),
+    ).toBe(true);
+    const lighting = await call('set_lighting', {
+      environmentAssetId: 'builtin:studio-softboxes',
+      environmentIntensity: 1.2,
+    });
+    expect(lighting.success).toBe(true);
+    expect(lighting.sceneRevision).toBe(3);
+    expect((await call('set_lighting', { environmentIntensity: 4.1 })).error?.code).toBe(
+      'VALIDATION_ERROR',
+    );
+    expect((await call('save_scene', { name: 'steel-bottle' })).success).toBe(true);
+    const fresh = await createApp({ ...service.options, runId: 'steel-bottle-fresh' });
+    const loaded = await fresh.service.execute({
+      tool: 'load_scene',
+      arguments: { name: 'steel-bottle' },
+    });
+    expect(loaded.success).toBe(true);
+    expect(fresh.service.engine.snapshot().objects.map((item) => item.id)).toEqual([
+      (body.result as SceneObject).id,
+      (mirror.result as SceneObject).id,
+    ]);
+    expect(fresh.service.engine.snapshot().lighting.environmentIntensity).toBe(1.2);
+    expect(fresh.service.engine.snapshot().objects[0]?.materialOverrides?.roughness).toBe(0.15);
+  });
   it('searches the original catalog and places assets without changing primitive semantics', async () => {
     const search = await call('search_assets', { query: 'pnw craftsman', kind: 'model' });
     expect(search.success).toBe(true);

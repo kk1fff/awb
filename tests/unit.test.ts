@@ -4,9 +4,135 @@ import { emptyScene, sceneSchema, toolSchemas, type SceneObject } from '../src/s
 import { buildWorld, disposeWorld, geometry } from '../src/client/world.js';
 import { buildBuiltinModel } from '../src/client/assets.js';
 import { builtinAssets, builtinAssetMap } from '../src/shared/assets.js';
-import { Box3, Color, DirectionalLight, Mesh, Vector3 } from 'three';
+import {
+  Box3,
+  Color,
+  DirectionalLight,
+  LatheGeometry,
+  Mesh,
+  MeshStandardMaterial,
+  Vector3,
+} from 'three';
+import { Reflector } from 'three/addons/objects/Reflector.js';
 
 describe('scene command invariants', () => {
+  it('validates editable lathe profiles and limits the scene to one mirror', () => {
+    const engine = new SceneEngine();
+    const profile: [number, number][] = [
+      [0, -0.5],
+      [0.5, -0.49],
+      [0.5, 0.2],
+      [0.25, 0.49],
+      [0, 0.5],
+    ];
+    expect(() => toolSchemas.create_object.parse({ name: 'Missing', type: 'lathe' })).toThrow();
+    expect(() =>
+      toolSchemas.create_object.parse({
+        name: 'Bad',
+        type: 'lathe',
+        profile: [
+          [0, 0],
+          [0, 0],
+          [0.5, 0.5],
+        ],
+      }),
+    ).toThrow();
+    const bottle = engine.execute(
+      'create_object',
+      toolSchemas.create_object.parse({ name: 'Bottle', type: 'lathe', profile }),
+    ) as SceneObject;
+    expect(bottle.profile).toEqual(profile);
+    const nextProfile: [number, number][] = [
+      [0, -0.5],
+      [0.4, -0.49],
+      [0.48, 0.25],
+      [0.2, 0.49],
+      [0, 0.5],
+    ];
+    engine.execute(
+      'update_object',
+      toolSchemas.update_object.parse({ id: bottle.id, profile: nextProfile }),
+    );
+    expect(engine.snapshot().objects[0].profile).toEqual(nextProfile);
+    expect(() => engine.execute('update_object', { id: bottle.id, profile: [[0, 0]] })).toThrow();
+    expect(engine.snapshot().revision).toBe(2);
+    const mirror = engine.execute(
+      'create_object',
+      toolSchemas.create_object.parse({ name: 'Table', type: 'mirror' }),
+    ) as SceneObject;
+    expect(mirror.color).toBe('#242a30');
+    expect(mirror.reflectionStrength).toBe(0.78);
+    expect(mirror.roughness).toBeUndefined();
+    expect(() => engine.execute('create_object', { name: 'Second table', type: 'mirror' })).toThrow(
+      'Only one live mirror',
+    );
+    expect(() => engine.execute('update_object', { id: mirror.id, metalness: 1 })).toThrow();
+    expect(engine.snapshot().revision).toBe(3);
+  });
+  it('keeps legacy preset behavior while applying explicit material overrides', async () => {
+    const engine = new SceneEngine();
+    engine.execute('create_object', {
+      name: 'Preset',
+      type: 'cylinder',
+      materialId: 'builtin:steel-brushed',
+    });
+    const overrideObject = engine.execute('create_object', {
+      name: 'Override',
+      type: 'cylinder',
+      materialId: 'builtin:steel-brushed',
+      roughness: 0.08,
+      materialOverrides: { metalness: 0.9, anisotropy: 0.35 },
+    }) as SceneObject;
+    expect(overrideObject.materialOverrides).toEqual({
+      roughness: 0.08,
+      metalness: 0.9,
+      anisotropy: 0.35,
+    });
+    engine.execute('update_object', { id: overrideObject.id, color: '#aaaaaa' });
+    const world = await buildWorld(engine.snapshot());
+    const meshes = world.children.filter((item) => item instanceof Mesh) as Mesh[];
+    const preset = meshes[0].material as MeshStandardMaterial;
+    const override = meshes[1].material as MeshStandardMaterial;
+    expect(preset.roughness).toBe(0.24);
+    expect(preset.metalness).toBe(1);
+    expect(preset.normalMap?.image).toMatchObject({ width: 256, height: 128 });
+    expect(override.roughness).toBe(0.08);
+    expect(override.metalness).toBe(0.9);
+    expect((override as typeof override & { anisotropy: number }).anisotropy).toBe(0.35);
+    expect(override.color.getHexString()).toBe('aaaaaa');
+    disposeWorld(world);
+  });
+  it('builds smooth lathe geometry and a disposable live mirror with an export fallback', async () => {
+    const engine = new SceneEngine();
+    engine.execute('create_object', {
+      name: 'Body',
+      type: 'lathe',
+      profile: [
+        [0, -0.5],
+        [0.5, -0.49],
+        [0.5, 0.2],
+        [0.2, 0.49],
+        [0, 0.5],
+      ],
+    });
+    engine.execute('create_object', { name: 'Table', type: 'mirror' });
+    const world = await buildWorld(engine.snapshot());
+    expect((world.children[0] as Mesh).geometry).toBeInstanceOf(LatheGeometry);
+    expect(((world.children[0] as Mesh).geometry as LatheGeometry).parameters.segments).toBe(96);
+    expect((world.children[0] as Mesh).geometry.getAttribute('tangent')).toBeDefined();
+    expect(world.children[1]).toBeInstanceOf(Reflector);
+    expect(
+      ((world.children[1] as Reflector).material as import('three').ShaderMaterial).uniforms
+        .reflectionStrength.value,
+    ).toBe(0.78);
+    disposeWorld(world);
+    const exportWorld = await buildWorld(engine.snapshot(), undefined, { forExport: true });
+    expect(exportWorld.children[1]).not.toBeInstanceOf(Reflector);
+    const material = (exportWorld.children[1] as Mesh).material as MeshStandardMaterial;
+    expect(material.metalness).toBe(1);
+    expect(material.roughness).toBeLessThan(0.1);
+    disposeWorld(exportWorld);
+  });
   it('creates defaults, patches only supplied fields, and keeps IDs stable', () => {
     const engine = new SceneEngine();
     const object = engine.execute(
@@ -162,6 +288,7 @@ describe('geometry and renderer mapping', () => {
     const parsed = engine.snapshot();
     expect(parsed.lighting.backgroundMode).toBe('solid');
     expect(parsed.lighting.directional.shadowSoftness).toBe(0);
+    expect(parsed.lighting.environmentIntensity).toBe(0.55);
     const world = await buildWorld(parsed);
     const sun = world.children.find((o) => o instanceof DirectionalLight) as DirectionalLight;
     expect((world.background as Color).getHexString()).toBe('e9ede5');

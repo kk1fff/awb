@@ -316,6 +316,108 @@ test('public lighting controls produce a visible change in a fixed-scene render'
   ).toBeGreaterThan(8);
 });
 
+test('@smoke native lathe and live mirror respond to reflection strength in a studio render', async ({
+  page,
+  request,
+}) => {
+  const workspaceResponse = await request.post('/api/workspaces', {
+    data: {
+      name: 'Studio mirror regression',
+      goal: 'Verify native lathe and live tabletop reflection',
+      owner: 'browser-test',
+      acceptanceCriteria: [],
+      constraints: [],
+    },
+  });
+  expect(workspaceResponse.ok()).toBe(true);
+  const workspaceId = ((await workspaceResponse.json()) as { workspace: { id: string } }).workspace
+    .id;
+  const scopedTool = async (name: string, args: unknown = {}) => {
+    const response = await request.post(`/api/workspaces/${workspaceId}/tools`, {
+      data: { tool: name, arguments: args },
+    });
+    const result = (await response.json()) as ToolResponse;
+    expect(result.success, JSON.stringify(result.error)).toBe(true);
+    return result;
+  };
+  const body = await scopedTool('create_object', {
+    name: 'Stainless bottle body',
+    type: 'lathe',
+    profile: [
+      [0, -0.5],
+      [0.48, -0.499],
+      [0.5, -0.42],
+      [0.5, 0.26],
+      [0.26, 0.44],
+      [0.25, 0.499],
+      [0, 0.5],
+    ],
+    dimensions: [1.7, 3, 1.7],
+    position: [0, 1.5, 0],
+    materialId: 'builtin:steel-brushed',
+  });
+  expect((body.result as SceneObject).profile).toHaveLength(7);
+  const mirror = await scopedTool('create_object', {
+    name: 'Dark mirror tabletop',
+    type: 'mirror',
+    dimensions: [10, 10, 1],
+    rotation: [-Math.PI / 2, 0, 0],
+    color: '#242a30',
+    reflectionStrength: 0,
+  });
+  await scopedTool('set_lighting', {
+    environmentAssetId: 'builtin:studio-softboxes',
+    environmentIntensity: 1.2,
+    ambient: { intensity: 0.2 },
+    directional: { intensity: 1.5 },
+  });
+  await scopedTool('set_camera', {
+    projection: 'perspective',
+    position: [5, 4, 8],
+    target: [0, 0.8, 0],
+    fov: 34,
+  });
+  const errors: string[] = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  await page.goto(`/?workspace=${workspaceId}`);
+  const capture = async (label: string) => {
+    const checkpoint = (await scopedTool('render_scene', { label })).result as Checkpoint;
+    const response = await request.get(checkpoint.screenshotUrl!);
+    expect(response.ok()).toBe(true);
+    const bytes = await response.body();
+    await mkdir('artifacts/tests', { recursive: true });
+    await writeFile(`artifacts/tests/${label}.png`, bytes);
+    return page.evaluate(async (base64) => {
+      const image = new Image();
+      image.src = `data:image/png;base64,${base64}`;
+      await image.decode();
+      const canvas = document.createElement('canvas');
+      canvas.width = image.width;
+      canvas.height = image.height;
+      const context = canvas.getContext('2d')!;
+      context.drawImage(image, 0, 0);
+      return Array.from(context.getImageData(0, 425, image.width, 300).data);
+    }, bytes.toString('base64'));
+  };
+  const dark = await capture('native-mirror-dark');
+  await scopedTool('update_object', {
+    id: (mirror.result as SceneObject).id,
+    reflectionStrength: 0.85,
+  });
+  const reflected = await capture('native-mirror-reflected');
+  let changed = 0;
+  for (let index = 0; index < dark.length; index += 4)
+    if (
+      Math.abs(dark[index]! - reflected[index]!) +
+        Math.abs(dark[index + 1]! - reflected[index + 1]!) +
+        Math.abs(dark[index + 2]! - reflected[index + 2]!) >
+      30
+    )
+      changed++;
+  expect(changed / (dark.length / 4)).toBeGreaterThan(0.02);
+  expect(errors).toEqual([]);
+});
+
 test('environment background and PCF softness change the same scene render', async ({
   page,
   request,

@@ -3,7 +3,7 @@ import type { Scene } from '../shared/schema.js';
 import { buildWorld, disposeWorld } from './world.js';
 
 export async function exportBrowserScene(scene: Scene, workspaceId?: string): Promise<number> {
-  const world = await buildWorld(scene, workspaceId, { sequential: true });
+  const world = await buildWorld(scene, workspaceId, { sequential: true, forExport: true });
   for (const child of [...world.children]) if (child.type.includes('Light')) world.remove(child);
   world.background = null;
   world.environment = null;
